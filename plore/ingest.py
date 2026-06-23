@@ -22,6 +22,13 @@ from .semantic import Operation, iter_operations, semantic_description
 
 _EMBED_BATCH = 64
 
+# Deterministic intent overlay for operations whose AWC terminology diverges from how users
+# phrase requests (semantic search + a small embedder won't bridge these reliably on its own).
+_INTENT_OVERRIDES: dict[str, str] = {
+    "deployApp": "create a cluster, provision a cluster, launch a cluster, spin up a cluster, "
+    "create a new cluster, create an experience, deploy a workload, deploy an application",
+}
+
 # Short domain hint so the model maps AWC terminology when generating intents.
 _AWC_HINT = (
     "AWC domain: a cluster, experience, or deployment is CREATED/PROVISIONED by deploying an "
@@ -129,6 +136,12 @@ def ingest(specs: dict[str, dict]) -> int:
                 descriptions[i] = f"{descriptions[i]} Intents: {intent}"
             if (i + 1) % 10 == 0:
                 print(f"  enriched {i + 1}/{len(ops)}", file=sys.stderr)
+
+    # Curated overlay: always applied, independent of LLM enrichment.
+    for i, op in enumerate(ops):
+        override = _INTENT_OVERRIDES.get(op.operation_id or "")
+        if override:
+            descriptions[i] = f"{descriptions[i]} Intents: {override}"
 
     conn = db.connect()
     db.ensure_schema(conn)

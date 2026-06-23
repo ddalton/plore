@@ -166,6 +166,8 @@ spec:
             - { name: DATABASE_URL, value: "postgresql://plore:plore@pgvector:5432/maui_registry" }
             - { name: LITELLM_BASE_URL, value: "http://litellm:4000/v1" }
             - { name: LITELLM_API_KEY, value: "sk-plore-local" }
+            # 8B LLM enrichment is unreliable; rely on the deterministic curated overlay.
+            - { name: ENRICH_DESCRIPTIONS, value: "false" }
           volumeMounts: [{ name: specs, mountPath: /specs }]
       volumes:
         - name: specs
