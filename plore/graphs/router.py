@@ -8,7 +8,8 @@ GET/HEAD/OPTIONS are auto-executed; mutating methods pause at a LangGraph interr
 from __future__ import annotations
 
 import json
-from typing import Any, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
 
 import httpx
 from langgraph.graph import END, StateGraph
@@ -65,6 +66,9 @@ class RouterState(TypedDict, total=False):
     result: dict[str, Any]
     error: str
     response: str  # final natural-language answer for the user
+    # Durable, append-only record of each turn in the session (persisted via checkpointer).
+    # Artifact references (e.g. stored download URLs) will be attached here too.
+    session_log: Annotated[list[dict[str, Any]], operator.add]
 
 
 def _node_triage(state: RouterState) -> RouterState:
@@ -95,7 +99,10 @@ def _node_meta(state: RouterState) -> RouterState:
         ],
         max_tokens=300,
     )
-    return {"response": answer}
+    return {
+        "response": answer,
+        "session_log": [{"query": state.get("query"), "kind": "meta", "response": answer}],
+    }
 
 
 def _node_optimize(state: RouterState) -> RouterState:
@@ -205,7 +212,19 @@ def _node_respond(state: RouterState) -> RouterState:
         ],
         max_tokens=400,
     )
-    return {"response": answer}
+    return {
+        "response": answer,
+        "session_log": [
+            {
+                "query": state.get("query"),
+                "kind": "api_action",
+                "proposed_call": state.get("proposed_call"),
+                "result": state.get("result"),
+                "error": state.get("error"),
+                "response": answer,
+            }
+        ],
+    }
 
 
 def _route_after_extract(state: RouterState) -> str:
