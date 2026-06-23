@@ -18,10 +18,10 @@ from .. import llm
 from ..config import config
 from .common import (
     candidate_views,
-    list_services,
     optimize_query,
     parse_json_object,
     retrieve,
+    service_catalog_lines,
 )
 
 _EXTRACT_SYSTEM = (
@@ -48,9 +48,10 @@ _TRIAGE_SYSTEM = (
 
 _META_SYSTEM = (
     "You are plore, an assistant that turns natural-language requests into AWC platform API calls "
-    "and (with approval) executes them. The platform exposes these services: {services}. Answer the "
-    "user's message conversationally and concisely — e.g. describe what you can help with and give a "
-    "couple of example requests. Do not output JSON or code."
+    "and (with approval) executes them. The platform exposes these services:\n{services}\n"
+    "Answer the user's message conversationally and concisely, grounded in the service descriptions "
+    "above — describe what you can help with and give a couple of example requests. You may include "
+    "code or examples if the user asks for them. Do not invent services beyond those listed."
 )
 
 
@@ -84,7 +85,7 @@ def _node_triage(state: RouterState) -> RouterState:
 
 def _node_meta(state: RouterState) -> RouterState:
     try:
-        services = ", ".join(list_services()) or "the AWC platform APIs"
+        services = "\n".join(service_catalog_lines()) or "the AWC platform APIs"
     except Exception:  # noqa: BLE001 - meta answer must not depend on the registry being up
         services = "the AWC platform APIs"
     answer = llm.chat(

@@ -34,6 +34,15 @@ CREATE INDEX IF NOT EXISTS api_endpoint_registry_embedding_hnsw
 
 CREATE INDEX IF NOT EXISTS api_endpoint_registry_project
     ON api_endpoint_registry (project_id);
+
+-- Per-service metadata (from each spec's OpenAPI info block) to ground meta answers.
+CREATE TABLE IF NOT EXISTS service_catalog (
+    project_id        VARCHAR(100) NOT NULL,
+    microservice_name VARCHAR(100) NOT NULL,
+    title             TEXT,
+    description       TEXT,
+    PRIMARY KEY (project_id, microservice_name)
+);
 """
 
 
@@ -98,6 +107,34 @@ def upsert_operation(
             embedding,
         ),
     )
+
+
+def upsert_service(
+    conn: psycopg.Connection,
+    *,
+    project_id: str,
+    microservice_name: str,
+    title: str | None,
+    description: str | None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO service_catalog (project_id, microservice_name, title, description)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (project_id, microservice_name)
+        DO UPDATE SET title = EXCLUDED.title, description = EXCLUDED.description
+        """,
+        (project_id, microservice_name, title, description),
+    )
+
+
+def service_catalog(conn: psycopg.Connection, *, project_id: str) -> list[tuple[str, str, str]]:
+    rows = conn.execute(
+        "SELECT microservice_name, COALESCE(title, ''), COALESCE(description, '') "
+        "FROM service_catalog WHERE project_id = %s ORDER BY microservice_name",
+        (project_id,),
+    ).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 def search(

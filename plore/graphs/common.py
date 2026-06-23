@@ -75,18 +75,20 @@ def candidate_views(candidates: list[db.Candidate]) -> list[dict[str, Any]]:
     return views
 
 
-def list_services() -> list[str]:
-    """Distinct microservice names in the registry (for grounding meta answers)."""
+def service_catalog_lines() -> list[str]:
+    """Grounded per-service lines ('- <title>: <first line of description>') for meta answers,
+    sourced from each spec's OpenAPI info block at ingestion time."""
     conn = db.connect()
     try:
-        rows = conn.execute(
-            "SELECT DISTINCT microservice_name FROM api_endpoint_registry "
-            "WHERE project_id = %s ORDER BY 1",
-            (config.project_id,),
-        ).fetchall()
-        return [r[0] for r in rows]
+        catalog = db.service_catalog(conn, project_id=config.project_id)
     finally:
         conn.close()
+    lines = []
+    for name, title, description in catalog:
+        label = title or name
+        summary = description.strip().split("\n")[0].strip() if description else ""
+        lines.append(f"- {label}: {summary}" if summary else f"- {label}")
+    return lines
 
 
 def parse_json_object(text: str) -> dict[str, Any]:

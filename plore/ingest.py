@@ -90,6 +90,18 @@ def ingest(specs: dict[str, dict]) -> int:
     conn = db.connect()
     db.ensure_schema(conn)
 
+    # Per-service metadata from each spec's OpenAPI info block (grounds meta answers).
+    for service, spec in specs.items():
+        info = spec.get("info") or {}
+        db.upsert_service(
+            conn,
+            project_id=config.project_id,
+            microservice_name=service,
+            title=(info.get("title") or "").strip() or None,
+            description=(info.get("description") or "").strip() or None,
+        )
+    conn.commit()
+
     written = 0
     for start in range(0, len(ops), _EMBED_BATCH):
         batch_ops = ops[start : start + _EMBED_BATCH]
