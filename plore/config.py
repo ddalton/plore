@@ -36,9 +36,15 @@ class Config:
     awc_mcp_url: str = _env("AWC_MCP_URL", "")
     awc_mcp_token: str = _env("AWC_MCP_TOKEN", "")
 
-    # Execution: base URL for resolved AWC API calls + bearer token (service-account JWT).
+    # Execution: one common gateway base URL (empty → dry-run). All AWC services are
+    # path-routed behind it (/api/v0/console, /api/v0/auth, /api/v1/diagnostics).
     awc_api_base: str = _env("AWC_API_BASE", "")
+    awc_api_verify_tls: bool = _env("AWC_API_VERIFY_TLS", "false").lower() == "true"
+    # Auth (Knox enforces at the gateway): a ready JWT, or an access key (client_id/secret)
+    # plore exchanges for one at the open /api/v0/auth/access-keys/token path (Knox-exempt).
     awc_api_token: str = _env("AWC_API_TOKEN", "")
+    awc_access_key_id: str = _env("AWC_ACCESS_KEY_ID", "")
+    awc_access_key_secret: str = _env("AWC_ACCESS_KEY_SECRET", "")
 
     # Methods that are auto-executed without a human approval gate.
     safe_methods: tuple[str, ...] = ("GET", "HEAD", "OPTIONS")

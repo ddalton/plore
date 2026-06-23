@@ -15,7 +15,7 @@ import httpx
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from .. import llm
+from .. import awc_auth, llm
 from ..config import config
 from .common import (
     candidate_views,
@@ -164,8 +164,9 @@ def _node_execute(state: RouterState) -> RouterState:
 
     url = config.awc_api_base.rstrip("/") + path
     headers = {"Accept": "application/json"}
-    if config.awc_api_token:
-        headers["Authorization"] = f"Bearer {config.awc_api_token}"
+    token = awc_auth.get_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
         resp = httpx.request(
             method,
@@ -173,6 +174,7 @@ def _node_execute(state: RouterState) -> RouterState:
             params=call.get("query_params") or None,
             json=call.get("body") or None,
             headers=headers,
+            verify=config.awc_api_verify_tls,
             timeout=30,
         )
         body: Any

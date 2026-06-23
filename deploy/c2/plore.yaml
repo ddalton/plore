@@ -148,6 +148,10 @@ spec:
   template:
     metadata: { labels: { app: plore-ui } }
     spec:
+      # CoreDNS doesn't resolve *.poc.internal; point the gateway host at its ClusterIP.
+      hostAliases:
+        - ip: "10.96.9.243"
+          hostnames: ["console.awc-core.poc.internal"]
       containers:
         - name: ui
           image: plore:0.1.0
@@ -159,6 +163,13 @@ spec:
             - { name: DATABASE_URL, value: "postgresql://plore:plore@pgvector:5432/maui_registry" }
             - { name: LITELLM_BASE_URL, value: "http://litellm:4000/v1" }
             - { name: LITELLM_API_KEY, value: "sk-plore-local" }
+            # Real execution through the AWC gateway (Knox-authenticated).
+            - { name: AWC_API_BASE, value: "https://console.awc-core.poc.internal" }
+            - { name: AWC_API_VERIFY_TLS, value: "false" }
+            - name: AWC_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: plore-awc-creds, key: client-id } }
+            - name: AWC_ACCESS_KEY_SECRET
+              valueFrom: { secretKeyRef: { name: plore-awc-creds, key: client-secret } }
           ports: [{ containerPort: 8501 }]
 ---
 apiVersion: v1
