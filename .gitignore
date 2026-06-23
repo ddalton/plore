@@ -10,3 +10,6 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .langgraph_api/
+
+# generated deploy artifacts
+deploy/c2/specs-bundle.json

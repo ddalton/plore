@@ -1,0 +1,169 @@
+# plore stack for the c2 kind cluster (namespace: plore).
+# Reuses the taalas-proxy already running in namespace `taalas` for chat.
+# ConfigMaps `litellm-config` and `specs-bundle` are created from files via kubectl
+# (see deploy/c2/deploy.sh). Storage is ephemeral (emptyDir) — this is a test cluster.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: plore
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgvector
+  namespace: plore
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: pgvector } }
+  template:
+    metadata: { labels: { app: pgvector } }
+    spec:
+      containers:
+        - name: pgvector
+          image: pgvector/pgvector:pg16
+          env:
+            - { name: POSTGRES_USER, value: plore }
+            - { name: POSTGRES_PASSWORD, value: plore }
+            - { name: POSTGRES_DB, value: maui_registry }
+          ports: [{ containerPort: 5432 }]
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+      volumes: [{ name: data, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: pgvector, namespace: plore }
+spec:
+  selector: { app: pgvector }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: plore
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ollama } }
+  template:
+    metadata: { labels: { app: ollama } }
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports: [{ containerPort: 11434 }]
+          volumeMounts: [{ name: models, mountPath: /root/.ollama }]
+      volumes: [{ name: models, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ollama, namespace: plore }
+spec:
+  selector: { app: ollama }
+  ports: [{ port: 11434, targetPort: 11434 }]
+---
+# Pulls the 384-dim embedding model into Ollama once it is reachable.
+apiVersion: batch/v1
+kind: Job
+metadata: { name: ollama-pull, namespace: plore }
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: pull
+          image: ollama/ollama:latest
+          env: [{ name: OLLAMA_HOST, value: "http://ollama:11434" }]
+          command: ["sh", "-c"]
+          args:
+            - |
+              until ollama list >/dev/null 2>&1; do echo "waiting for ollama..."; sleep 3; done
+              ollama pull all-minilm
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: plore
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: litellm } }
+  template:
+    metadata: { labels: { app: litellm } }
+    spec:
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-latest
+          args: ["--config", "/app/config.yaml", "--port", "4000"]
+          env:
+            - { name: TAALAS_PROXY_BASE, value: "http://taalas-proxy.taalas.svc.cluster.local:3000/v1" }
+            - { name: TAALAS_PROXY_KEY, value: "sk-taalas-local" }
+            - { name: EMBED_BASE, value: "http://ollama:11434/v1" }
+            - { name: LITELLM_MASTER_KEY, value: "sk-plore-local" }
+          ports: [{ containerPort: 4000 }]
+          volumeMounts:
+            - { name: cfg, mountPath: /app/config.yaml, subPath: config.yaml }
+      volumes:
+        - name: cfg
+          configMap: { name: litellm-config }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: litellm, namespace: plore }
+spec:
+  selector: { app: litellm }
+  ports: [{ port: 4000, targetPort: 4000 }]
+---
+# One-shot ingestion of the OpenAPI specs (from the mounted bundle) into pgvector.
+apiVersion: batch/v1
+kind: Job
+metadata: { name: plore-ingest, namespace: plore }
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: ingest
+          image: plore:0.1.0
+          imagePullPolicy: Never
+          command: ["plore-ingest", "--bundle", "/specs/specs-bundle.json"]
+          env:
+            - { name: DATABASE_URL, value: "postgresql://plore:plore@pgvector:5432/maui_registry" }
+            - { name: LITELLM_BASE_URL, value: "http://litellm:4000/v1" }
+            - { name: LITELLM_API_KEY, value: "sk-plore-local" }
+          volumeMounts: [{ name: specs, mountPath: /specs }]
+      volumes:
+        - name: specs
+          configMap: { name: specs-bundle }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plore-ui
+  namespace: plore
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: plore-ui } }
+  template:
+    metadata: { labels: { app: plore-ui } }
+    spec:
+      containers:
+        - name: ui
+          image: plore:0.1.0
+          imagePullPolicy: Never
+          command: ["streamlit", "run", "ui/app.py",
+                    "--server.address", "0.0.0.0", "--server.port", "8501",
+                    "--server.headless", "true"]
+          env:
+            - { name: DATABASE_URL, value: "postgresql://plore:plore@pgvector:5432/maui_registry" }
+            - { name: LITELLM_BASE_URL, value: "http://litellm:4000/v1" }
+            - { name: LITELLM_API_KEY, value: "sk-plore-local" }
+          ports: [{ containerPort: 8501 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: plore-ui, namespace: plore }
+spec:
+  selector: { app: plore-ui }
+  ports: [{ port: 8501, targetPort: 8501 }]

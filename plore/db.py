@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
 import psycopg
 from pgvector import Vector
@@ -12,7 +11,30 @@ from pgvector.psycopg import register_vector
 
 from .config import config
 
-_SCHEMA_SQL = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+# Authoritative schema (kept in sync with db/schema.sql, which is the human-readable copy).
+# Inlined so it works whether the package is installed editable or into site-packages.
+_SCHEMA_SQL = """
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS api_endpoint_registry (
+    id                   BIGSERIAL PRIMARY KEY,
+    project_id           VARCHAR(100) NOT NULL,
+    microservice_name    VARCHAR(100) NOT NULL,
+    http_method          VARCHAR(10)  NOT NULL,
+    endpoint_path        VARCHAR(255) NOT NULL,
+    operation_id         VARCHAR(255),
+    raw_openapi_json     JSONB        NOT NULL,
+    semantic_description TEXT         NOT NULL,
+    embedding            VECTOR(384)  NOT NULL,
+    UNIQUE (project_id, microservice_name, http_method, endpoint_path)
+);
+
+CREATE INDEX IF NOT EXISTS api_endpoint_registry_embedding_hnsw
+    ON api_endpoint_registry USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX IF NOT EXISTS api_endpoint_registry_project
+    ON api_endpoint_registry (project_id);
+"""
 
 
 def connect() -> psycopg.Connection:
@@ -25,7 +47,7 @@ def connect() -> psycopg.Connection:
 
 
 def ensure_schema(conn: psycopg.Connection) -> None:
-    conn.execute(_SCHEMA_SQL.read_text())
+    conn.execute(_SCHEMA_SQL)
     conn.commit()
 
 
