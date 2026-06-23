@@ -129,9 +129,11 @@ def _node_extract(state: RouterState) -> RouterState:
     if not ops:
         return {"error": "no candidate endpoints found"}
     # Present candidates with explicit ids; the model selects one (it cannot invent a path/method).
+    # Concise listing for selection: the full description is great for embedding/recall but
+    # overwhelms a small model here ("lost in the middle"). Prefer the terse summary.
     listing = [
         {"id": i, "service": c["service"], "method": c["method"], "path": c["path"],
-         "description": c.get("description") or c.get("summary"),
+         "summary": c.get("summary") or (c.get("description") or "")[:120],
          "parameters": c.get("parameters"), "has_body": c.get("has_body")}
         for i, c in enumerate(ops)
     ]
