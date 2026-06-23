@@ -91,9 +91,10 @@ def semantic_description(op: Operation) -> str:
     if summary:
         parts.append(summary if summary.endswith(".") else summary + ".")
     if description and description != summary:
-        # Keep it tight — first sentence is plenty for retrieval.
-        first = description.split(". ")[0].strip().rstrip(".")
-        parts.append(first + ".")
+        # Use the full description (collapsed, capped) — it carries the disambiguating
+        # detail (e.g. "Creating a new Kubernetes cluster") that a first-sentence cut drops.
+        full = " ".join(description.split())
+        parts.append(full[:600])
     if tags:
         parts.append(f"Tags: {tags}.")
     if params:

@@ -22,12 +22,10 @@ from .semantic import Operation, iter_operations, semantic_description
 
 _EMBED_BATCH = 64
 
-# Deterministic intent overlay for operations whose AWC terminology diverges from how users
-# phrase requests (semantic search + a small embedder won't bridge these reliably on its own).
-_INTENT_OVERRIDES: dict[str, str] = {
-    "deployApp": "create a cluster, provision a cluster, launch a cluster, spin up a cluster, "
-    "create a new cluster, create an experience, deploy a workload, deploy an application",
-}
+# Deterministic intent overlay for operations whose description doesn't disambiguate intent.
+# Empty now that we embed the FULL description (which already carries the signal, e.g.
+# deployApp's "Creating a new Kubernetes cluster"). Add entries only for genuinely terse specs.
+_INTENT_OVERRIDES: dict[str, str] = {}
 
 # Short domain hint so the model maps AWC terminology when generating intents.
 _AWC_HINT = (

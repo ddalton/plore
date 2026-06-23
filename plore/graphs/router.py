@@ -29,13 +29,9 @@ from .common import (
 
 _EXTRACT_SYSTEM = (
     "You are a Parameter Extraction Agent for the AWC platform. Given a user request and a "
-    "numbered list of candidate API operations, choose the SINGLE best operation BY ITS id.\n"
-    "CRITICAL — match the user's ACTION to the HTTP method, not just keywords:\n"
-    "- create / add / provision / launch / deploy / new / spin up  -> a POST (or PUT) that CREATES\n"
-    "- list / show / view / get / find  -> GET\n"
-    "- delete / remove / destroy / tear down  -> DELETE\n"
-    "- update / change / modify  -> PUT/PATCH\n"
-    "Pick the operation whose purpose matches the verb; never pick a GET/list for a create request.\n"
+    "numbered list of candidate API operations (each with a description), choose the SINGLE best "
+    "operation BY ITS id — the one whose description performs the user's intended action "
+    "(e.g. creating vs listing vs deleting the same resource).\n"
     "Respond with ONLY a JSON object of this exact shape:\n"
     '{"id": <integer id of the chosen candidate, or null if none fit>, '
     '"path_params": {}, "query_params": {}, "body": {}}\n'
@@ -130,7 +126,7 @@ def _node_extract(state: RouterState) -> RouterState:
     # Present candidates with explicit ids; the model selects one (it cannot invent a path/method).
     listing = [
         {"id": i, "service": c["service"], "method": c["method"], "path": c["path"],
-         "summary": c.get("summary") or c.get("description"),
+         "description": c.get("description") or c.get("summary"),
          "parameters": c.get("parameters"), "has_body": c.get("has_body")}
         for i, c in enumerate(ops)
     ]
