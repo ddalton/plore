@@ -52,3 +52,13 @@ services:
       LITELLM_BASE_URL: http://litellm:4000/v1
       LITELLM_API_KEY: "sk-plore-local"
     ports: ["2024:2024"]
+
+  ui:
+    build: .
+    depends_on: [litellm, pgvector]
+    command: ["streamlit", "run", "ui/app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
+    environment:
+      DATABASE_URL: postgresql://plore:plore@pgvector:5432/maui_registry
+      LITELLM_BASE_URL: http://litellm:4000/v1
+      LITELLM_API_KEY: "sk-plore-local"
+    ports: ["8501:8501"]

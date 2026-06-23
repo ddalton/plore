@@ -15,6 +15,8 @@ This is Phase I of the MAUI agentic platform. See `~/Documents/plore-phase1-plan
 - **Agent 1 — Router** (`plore/graphs/router.py`): `optimize → retrieve → extract → approval → execute`.
   GET/HEAD/OPTIONS auto-execute; mutating methods pause at a LangGraph **interrupt** (HITL gate).
 - **Agent 2 — Discovery** (`plore/graphs/discovery.py`): read-only "which endpoint do I call?".
+- **UI** (`ui/app.py`) — Streamlit: enter a query, watch optimize→retrieve→extract→execute,
+  approve/reject mutating calls inline, and read the processed natural-language response.
 - **LiteLLM** (`litellm/config.yaml`) and **TEI** embedder, wired in `docker-compose.yaml`.
 
 No FastAPI: graphs are served by the **LangGraph server** (`langgraph dev`, see `langgraph.json`),
@@ -38,6 +40,10 @@ plore-router "create a cluster named demo"
 
 # 3c. or serve both graphs over HTTP
 langgraph dev
+
+# 3d. or use the UI
+pip install -e ".[ui]"
+streamlit run ui/app.py          # http://localhost:8501
 ```
 
 ## Configuration

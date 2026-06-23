@@ -42,6 +42,7 @@ class RouterState(TypedDict, total=False):
     approved: bool
     result: dict[str, Any]
     error: str
+    response: str  # final natural-language answer for the user
 
 
 def _node_optimize(state: RouterState) -> RouterState:
@@ -126,9 +127,35 @@ def _node_rejected(state: RouterState) -> RouterState:
     return {"result": {"status": "rejected", "proposed_call": state.get("proposed_call")}}
 
 
+_RESPOND_SYSTEM = (
+    "You are an AWC assistant. Using ONLY the information provided (the user's request, the API "
+    "call that was made or proposed, and its result), write a clear, concise natural-language "
+    "answer for the user. If the result is a dry run, explain what would be called. If there was "
+    "an error or the action was rejected, say so plainly. Summarize result data; do not invent "
+    "anything not present in the result."
+)
+
+
+def _node_respond(state: RouterState) -> RouterState:
+    payload = {
+        "user_request": state.get("query"),
+        "api_call": state.get("proposed_call"),
+        "result": state.get("result"),
+        "error": state.get("error"),
+    }
+    answer = llm.chat(
+        [
+            {"role": "system", "content": _RESPOND_SYSTEM},
+            {"role": "user", "content": json.dumps(payload, default=str)},
+        ],
+        max_tokens=400,
+    )
+    return {"response": answer}
+
+
 def _route_after_extract(state: RouterState) -> str:
     if state.get("error"):
-        return END
+        return "respond"
     method = (state.get("proposed_call") or {}).get("method", "GET")
     return "execute" if method in config.safe_methods else "approval_gate"
 
@@ -145,16 +172,19 @@ def build_graph(checkpointer=None):
     g.add_node("approval_gate", _node_approval_gate)
     g.add_node("execute", _node_execute)
     g.add_node("rejected", _node_rejected)
+    g.add_node("respond", _node_respond)
 
     g.set_entry_point("optimize")
     g.add_edge("optimize", "retrieve")
     g.add_edge("retrieve", "extract")
     g.add_conditional_edges("extract", _route_after_extract,
-                            {"execute": "execute", "approval_gate": "approval_gate", END: END})
+                            {"execute": "execute", "approval_gate": "approval_gate",
+                             "respond": "respond"})
     g.add_conditional_edges("approval_gate", _route_after_gate,
                             {"execute": "execute", "rejected": "rejected"})
-    g.add_edge("execute", END)
-    g.add_edge("rejected", END)
+    g.add_edge("execute", "respond")
+    g.add_edge("rejected", "respond")
+    g.add_edge("respond", END)
     return g.compile(checkpointer=checkpointer)
 
 

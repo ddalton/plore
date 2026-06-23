@@ -19,6 +19,7 @@ dependencies = [
 # langgraph-cli provides `langgraph dev` (the LangGraph Server) for HTTP serving,
 # threads, interrupts and resume. No FastAPI needed.
 dev = ["langgraph-cli[inmem]>=0.2.8", "pytest>=8.0", "ruff>=0.6"]
+ui = ["streamlit>=1.39"]
 
 [project.scripts]
 plore-ingest = "plore.ingest:main"
