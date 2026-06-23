@@ -75,6 +75,20 @@ def candidate_views(candidates: list[db.Candidate]) -> list[dict[str, Any]]:
     return views
 
 
+def list_services() -> list[str]:
+    """Distinct microservice names in the registry (for grounding meta answers)."""
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT microservice_name FROM api_endpoint_registry "
+            "WHERE project_id = %s ORDER BY 1",
+            (config.project_id,),
+        ).fetchall()
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
+
+
 def parse_json_object(text: str) -> dict[str, Any]:
     """Best-effort extraction of a JSON object from an LLM reply (handles code fences)."""
     text = text.strip()
