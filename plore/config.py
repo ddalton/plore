@@ -25,8 +25,10 @@ class Config:
     embed_dim: int = int(_env("EMBED_DIM", "384"))
 
     # Retrieval
-    top_k: int = int(_env("TOP_K", "3"))
+    top_k: int = int(_env("TOP_K", "5"))
     project_id: str = _env("PROJECT_ID", "awc")
+    # Ingestion: LLM-enrich each operation's embedded text with intent/synonyms for recall.
+    enrich_descriptions: bool = _env("ENRICH_DESCRIPTIONS", "true").lower() == "true"
 
     # Ingestion sources (priority: --from-mcp / AWC_MCP_URL, else --bundle, else SPECS_DIR).
     #  - specs_dir: directory with <service>/openapi.yaml (local dev only).

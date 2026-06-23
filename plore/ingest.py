@@ -22,6 +22,34 @@ from .semantic import Operation, iter_operations, semantic_description
 
 _EMBED_BATCH = 64
 
+# Short domain hint so the model maps AWC terminology when generating intents.
+_AWC_HINT = (
+    "AWC domain: a cluster, experience, or deployment is CREATED/PROVISIONED by deploying an "
+    "application (the deployApp operation). Engine/EngineInstance are service templates/instances."
+)
+
+
+def _enrich_intent(method: str, path: str, base_desc: str) -> str:
+    """One LLM line of user-intent synonyms for an operation, to improve search recall."""
+    try:
+        out = llm.chat(
+            [
+                {
+                    "role": "system",
+                    "content": "In ONE short line, list the natural-language user requests "
+                    "(with synonyms like create/provision/launch/list/delete) that should map to "
+                    "this AWC API operation, to improve semantic search. " + _AWC_HINT
+                    + " Plain text only, no preamble, no list markers.",
+                },
+                {"role": "user", "content": f"{method} {path} — {base_desc}"},
+            ],
+            max_tokens=80,
+        )
+    except Exception:  # noqa: BLE001 - enrichment is best-effort; fall back to base description
+        return ""
+    line = out.strip().splitlines()[0].strip() if out and out.strip() else ""
+    return line if 0 < len(line) <= 240 else ""
+
 
 def _load_specs_from_dir(specs_dir: Path) -> dict[str, dict]:
     """Map service-name -> spec dict from <service>/openapi.{yaml,json} files."""
@@ -86,6 +114,14 @@ def ingest(specs: dict[str, dict]) -> int:
         return 0
 
     descriptions = [semantic_description(op) for op in ops]
+    if config.enrich_descriptions:
+        print(f"Enriching {len(ops)} descriptions with intent synonyms (LLM)...", file=sys.stderr)
+        for i, op in enumerate(ops):
+            intent = _enrich_intent(op.http_method, op.endpoint_path, descriptions[i])
+            if intent:
+                descriptions[i] = f"{descriptions[i]} Intents: {intent}"
+            if (i + 1) % 10 == 0:
+                print(f"  enriched {i + 1}/{len(ops)}", file=sys.stderr)
 
     conn = db.connect()
     db.ensure_schema(conn)

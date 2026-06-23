@@ -21,14 +21,34 @@ QUERY_OPTIMIZER_SYSTEM = (
 
 
 def optimize_query(query: str) -> str:
-    optimized = llm.chat(
+    raw = llm.chat(
         [
             {"role": "system", "content": QUERY_OPTIMIZER_SYSTEM},
             {"role": "user", "content": query},
         ],
         max_tokens=128,
     )
-    return optimized or query
+    return _clean_optimized(raw, fallback=query)
+
+
+def _clean_optimized(text: str, fallback: str) -> str:
+    """Small models often ignore 'output only' and emit numbered reasoning. Extract just the
+    optimized string (prefer a final quoted value), and fall back to the raw query if unsure."""
+    if not text or not text.strip():
+        return fallback
+    import re
+
+    quoted = re.findall(r'"([^"]+)"', text)
+    if quoted:
+        cand = quoted[-1].strip()
+    else:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        cand = lines[-1] if lines else ""
+        cand = re.sub(r"^(\d+[.)]\s*)?(output:?\s*)?", "", cand, flags=re.I).strip().strip('"')
+    # Reject obviously-bad extractions (empty, too long, leftover step markers).
+    if not cand or len(cand) > 200 or re.match(r"^\d+[.)]\s", cand):
+        return fallback
+    return cand
 
 
 def retrieve(optimized_query: str) -> list[db.Candidate]:

@@ -29,13 +29,13 @@ from .common import (
 
 _EXTRACT_SYSTEM = (
     "You are a Parameter Extraction Agent for the AWC platform. Given a user request and a "
-    "short list of candidate API operations, pick the SINGLE best operation and construct its "
-    "call. Respond with ONLY a JSON object of this exact shape:\n"
-    '{"service": "...", "method": "...", "path": "...", '
+    "numbered list of candidate API operations, choose the SINGLE best operation BY ITS id. "
+    "Respond with ONLY a JSON object of this exact shape:\n"
+    '{"id": <integer id of the chosen candidate, or null if none fit>, '
     '"path_params": {}, "query_params": {}, "body": {}}\n'
-    "Use the exact method and path of the chosen candidate. Fill path_params for any {placeholders} "
-    "in the path. Only include values you can infer from the request; leave unknowns out. "
-    'If NONE of the candidates can satisfy the request, respond with {"no_match": true}. No prose.'
+    "Do NOT output a method or path — only the id. Fill path_params for any {placeholders} in the "
+    "chosen candidate's path; include only values you can infer from the request. If none of the "
+    "candidates can satisfy the request, set id to null. No prose."
 )
 
 
@@ -120,25 +120,43 @@ def _node_extract(state: RouterState) -> RouterState:
     ops = state.get("candidates") or []
     if not ops:
         return {"error": "no candidate endpoints found"}
+    # Present candidates with explicit ids; the model selects one (it cannot invent a path/method).
+    listing = [
+        {"id": i, "service": c["service"], "method": c["method"], "path": c["path"],
+         "summary": c.get("summary") or c.get("description"),
+         "parameters": c.get("parameters"), "has_body": c.get("has_body")}
+        for i, c in enumerate(ops)
+    ]
     reply = llm.chat(
         [
             {"role": "system", "content": _EXTRACT_SYSTEM},
             {
                 "role": "user",
                 "content": f"User request:\n{state['query']}\n\nCandidate operations:\n"
-                + json.dumps(ops, indent=2),
+                + json.dumps(listing, indent=2),
             },
         ],
-        max_tokens=512,
+        max_tokens=400,
     )
     try:
         proposed = parse_json_object(reply)
     except ValueError as exc:
         return {"error": str(exc)}
-    if proposed.get("no_match"):
+    idx = proposed.get("id")
+    if not isinstance(idx, int) or idx < 0 or idx >= len(ops):
         return {"error": "No registered endpoint matches this request."}
-    proposed["method"] = str(proposed.get("method", "")).upper()
-    return {"proposed_call": proposed}
+    chosen = ops[idx]
+    # method and path are taken VERBATIM from the retrieved candidate — never model-authored.
+    return {
+        "proposed_call": {
+            "service": chosen["service"],
+            "method": str(chosen["method"]).upper(),
+            "path": chosen["path"],
+            "path_params": proposed.get("path_params") or {},
+            "query_params": proposed.get("query_params") or {},
+            "body": proposed.get("body") or {},
+        }
+    }
 
 
 def _node_approval_gate(state: RouterState) -> RouterState:
