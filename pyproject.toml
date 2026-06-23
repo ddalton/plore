@@ -1,0 +1,36 @@
+[project]
+name = "plore"
+version = "0.1.0"
+description = "Intent-driven API router for AWC — LangGraph agents over a pgvector OpenAPI registry"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.50",
+    "langgraph-checkpoint-postgres>=2.0",
+    "langchain-core>=0.3.0",
+    "openai>=1.40",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3.6",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# langgraph-cli provides `langgraph dev` (the LangGraph Server) for HTTP serving,
+# threads, interrupts and resume. No FastAPI needed.
+dev = ["langgraph-cli[inmem]>=0.2.8", "pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+plore-ingest = "plore.ingest:main"
+plore-router = "plore.cli:router_main"
+plore-discovery = "plore.cli:discovery_main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["plore*"]
+
+[tool.ruff]
+line-length = 100

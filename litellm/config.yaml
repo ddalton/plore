@@ -1,0 +1,22 @@
+# LiteLLM gateway: one OpenAI-compatible surface for plore.
+#  - chat  -> taalas-proxy (llama3.1-8B via chatjimmy)
+#  - embed -> Text-Embeddings-Inference (bge-small-en-v1.5, 384-dim)
+model_list:
+  - model_name: taalas-llama
+    litellm_params:
+      model: openai/llama3.1-8B
+      api_base: os.environ/TAALAS_PROXY_BASE
+      api_key: os.environ/TAALAS_PROXY_KEY
+
+  - model_name: bge-small
+    litellm_params:
+      model: openai/bge-small-en-v1.5
+      api_base: os.environ/TEI_BASE
+      api_key: "none"
+
+litellm_settings:
+  drop_params: true        # silently drop params the upstream can't use
+  num_retries: 2
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "router": "./plore/graphs/router.py:graph",
+    "discovery": "./plore/graphs/discovery.py:graph"
+  },
+  "env": ".env"
+}
