@@ -30,8 +30,13 @@ from .common import (
 _EXTRACT_SYSTEM = (
     "You are a Parameter Extraction Agent for the AWC platform. Given a user request and a "
     "numbered list of candidate API operations (each with a description), choose the SINGLE best "
-    "operation BY ITS id — the one whose description performs the user's intended action "
-    "(e.g. creating vs listing vs deleting the same resource).\n"
+    "operation BY ITS id — the one whose description performs the user's intended action.\n"
+    "Match the user's ACTION to the right operation (a small model tends to over-match keywords):\n"
+    "- create / add / provision / launch / deploy / new / spin up  -> the operation that CREATES\n"
+    "- list / show / view / get / find  -> the GET that lists/returns\n"
+    "- delete / remove / destroy  -> the DELETE\n"
+    "- update / change / modify  -> the PUT/PATCH\n"
+    "Never pick a list/GET for a create request, even if it shares keywords.\n"
     "Respond with ONLY a JSON object of this exact shape:\n"
     '{"id": <integer id of the chosen candidate, or null if none fit>, '
     '"path_params": {}, "query_params": {}, "body": {}}\n'
