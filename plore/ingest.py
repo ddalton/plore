@@ -32,15 +32,44 @@ def _load_specs_from_dir(specs_dir: Path) -> dict[str, dict]:
     return specs
 
 
-def _load_specs_from_bundle(bundle_path: Path) -> dict[str, dict]:
+def _parse_bundle(data: dict) -> dict[str, dict]:
     """Parse the awc-mcp get_api_specs bundle: {service: {content: "<yaml>", ...}}."""
-    data = json.loads(bundle_path.read_text())
     specs: dict[str, dict] = {}
     for service, entry in data.items():
         content = entry.get("content") if isinstance(entry, dict) else None
         if content:
             specs[service] = yaml.safe_load(content)
     return specs
+
+
+def _load_specs_from_bundle(bundle_path: Path) -> dict[str, dict]:
+    return _parse_bundle(json.loads(bundle_path.read_text()))
+
+
+def _load_specs_from_mcp(url: str, token: str = "") -> dict[str, dict]:
+    """Fetch specs from awc-mcp's `get_api_specs` tool over streamable HTTP MCP.
+
+    Cluster-native source: the OpenAPI files are not present on the cluster, but
+    awc-mcp compiles them in and serves them. Needs a JWT if awc-mcp enforces auth.
+    """
+    import asyncio
+
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+
+    async def _run() -> dict:
+        async with streamablehttp_client(url, headers=headers) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("get_api_specs", {})
+        text = next((c.text for c in result.content if getattr(c, "type", None) == "text"), None)
+        if not text:
+            raise RuntimeError("awc-mcp get_api_specs returned no text content")
+        return json.loads(text)
+
+    return _parse_bundle(asyncio.run(_run()))
 
 
 def collect_operations(specs: dict[str, dict]) -> list[Operation]:
@@ -88,16 +117,20 @@ def ingest(specs: dict[str, dict]) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest OpenAPI specs into pgvector.")
-    parser.add_argument("--specs-dir", default=config.specs_dir or None)
-    parser.add_argument("--bundle", default=None, help="awc-mcp get_api_specs JSON bundle")
+    parser.add_argument("--from-mcp", default=config.awc_mcp_url or None,
+                        help="awc-mcp streamable-HTTP URL, e.g. http://awc-mcp:8080/mcp (cluster source)")
+    parser.add_argument("--specs-dir", default=config.specs_dir or None, help="local <service>/openapi.yaml dir")
+    parser.add_argument("--bundle", default=None, help="awc-mcp get_api_specs JSON bundle file")
     args = parser.parse_args()
 
-    if args.bundle:
+    if args.from_mcp:
+        specs = _load_specs_from_mcp(args.from_mcp, config.awc_mcp_token)
+    elif args.bundle:
         specs = _load_specs_from_bundle(Path(args.bundle))
     elif args.specs_dir:
         specs = _load_specs_from_dir(Path(args.specs_dir))
     else:
-        parser.error("provide --specs-dir or SPECS_DIR, or --bundle")
+        parser.error("provide --from-mcp/AWC_MCP_URL, --bundle, or --specs-dir/SPECS_DIR")
 
     print(f"Loaded {len(specs)} service spec(s): {', '.join(specs)}", file=sys.stderr)
     n = ingest(specs)

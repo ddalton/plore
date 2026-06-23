@@ -27,10 +27,14 @@ which provides threads, interrupts and resume; a thin **CLI** is provided for lo
 pip install -e ".[dev]"
 
 # 1. bring up the stack (vector DB, embedder, chat proxy, gateway)
-docker compose up -d pgvector tei taalas-proxy litellm
+docker compose up -d pgvector ollama taalas-proxy litellm
+docker compose exec ollama ollama pull all-minilm   # first run only (384-dim embedder)
 
 # 2. ingest the AWC OpenAPI specs into pgvector
+#    local dev: read the spec files directly
 SPECS_DIR=../awc-core/api plore-ingest
+#    in-cluster: the files aren't on the cluster — pull specs from awc-mcp instead
+#    AWC_MCP_URL=http://awc-mcp:8080/mcp plore-ingest   (--from-mcp)
 
 # 3a. read-only discovery
 plore-discovery "how do I list deployed clusters?"

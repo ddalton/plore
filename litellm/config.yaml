@@ -8,11 +8,12 @@ model_list:
       api_base: os.environ/TAALAS_PROXY_BASE
       api_key: os.environ/TAALAS_PROXY_KEY
 
+  # Embedding alias 'bge-small' (384-dim). Local: Ollama all-minilm. Cluster: TEI bge-small.
   - model_name: bge-small
     litellm_params:
-      model: openai/bge-small-en-v1.5
-      api_base: os.environ/TEI_BASE
-      api_key: "none"
+      model: openai/all-minilm
+      api_base: os.environ/EMBED_BASE
+      api_key: "ollama"
 
 litellm_settings:
   drop_params: true        # silently drop params the upstream can't use

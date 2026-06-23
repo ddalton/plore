@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg
+from pgvector import Vector
 from pgvector.psycopg import register_vector
 
 from .config import config
@@ -16,6 +17,9 @@ _SCHEMA_SQL = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 
 def connect() -> psycopg.Connection:
     conn = psycopg.connect(config.database_url)
+    # The `vector` type must exist before psycopg can register its adapter.
+    conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    conn.commit()
     register_vector(conn)
     return conn
 
@@ -92,7 +96,7 @@ def search(
         ORDER BY embedding <=> %s
         LIMIT %s
         """,
-        (query_embedding, project_id, query_embedding, k),
+        (Vector(query_embedding), project_id, Vector(query_embedding), k),
     ).fetchall()
     return [
         Candidate(

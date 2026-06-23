@@ -28,8 +28,13 @@ class Config:
     top_k: int = int(_env("TOP_K", "3"))
     project_id: str = _env("PROJECT_ID", "awc")
 
-    # Ingestion: directory of OpenAPI specs (e.g. awc-core/api with <service>/openapi.yaml).
+    # Ingestion sources (priority: --from-mcp / AWC_MCP_URL, else --bundle, else SPECS_DIR).
+    #  - specs_dir: directory with <service>/openapi.yaml (local dev only).
+    #  - awc_mcp_url: awc-mcp streamable-HTTP endpoint; specs fetched via get_api_specs
+    #    (cluster-native — the files are NOT on the cluster, awc-mcp serves them).
     specs_dir: str = _env("SPECS_DIR", "")
+    awc_mcp_url: str = _env("AWC_MCP_URL", "")
+    awc_mcp_token: str = _env("AWC_MCP_TOKEN", "")
 
     # Execution: base URL for resolved AWC API calls + bearer token (service-account JWT).
     awc_api_base: str = _env("AWC_API_BASE", "")
