@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import json
 import operator
+import re
 from typing import Annotated, Any, TypedDict
+from uuid import uuid4
 
 import httpx
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from .. import awc_auth, llm
+from .. import artifacts, awc_auth, llm
 from ..config import config
 from .common import (
     candidate_views,
@@ -163,7 +165,7 @@ def _node_execute(state: RouterState) -> RouterState:
         return {"result": {"status": "dry_run", "would_call": {**call, "resolved_path": path}}}
 
     url = config.awc_api_base.rstrip("/") + path
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json, */*"}
     token = awc_auth.get_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -175,16 +177,42 @@ def _node_execute(state: RouterState) -> RouterState:
             json=call.get("body") or None,
             headers=headers,
             verify=config.awc_api_verify_tls,
-            timeout=30,
+            timeout=60,
         )
-        body: Any
-        try:
-            body = resp.json()
-        except Exception:
-            body = resp.text[:2000]
-        return {"result": {"status": resp.status_code, "url": url, "method": method, "body": body}}
     except Exception as exc:  # noqa: BLE001 - surface any transport error to the caller
         return {"error": f"execution failed: {exc}"}
+
+    result: dict[str, Any] = {"status": resp.status_code, "url": url, "method": method}
+    ctype = resp.headers.get("content-type", "").lower()
+    disp = resp.headers.get("content-disposition", "")
+    is_binary = bool(
+        "attachment" in disp
+        or (ctype and not ctype.startswith("text/") and "json" not in ctype)
+        or len(resp.content) > 200_000
+    )
+
+    if "application/json" in ctype:
+        try:
+            result["body"] = resp.json()
+        except Exception:  # noqa: BLE001
+            result["body"] = resp.text[:2000]
+    elif is_binary and resp.is_success:
+        filename = _artifact_filename(disp, path)
+        key = f"downloads/{uuid4().hex}-{filename}"
+        result["artifact"] = artifacts.offload(
+            resp.content, key, ctype or "application/octet-stream"
+        )
+    else:
+        result["body"] = resp.text[:2000]
+    return {"result": result}
+
+
+def _artifact_filename(content_disposition: str, path: str) -> str:
+    m = re.search(r'filename\*?=(?:"([^"]+)"|([^;]+))', content_disposition)
+    if m:
+        return (m.group(1) or m.group(2)).strip().split("/")[-1]
+    base = path.rstrip("/").split("/")[-1] or "artifact"
+    return base if "." in base else base + ".bin"
 
 
 def _node_rejected(state: RouterState) -> RouterState:

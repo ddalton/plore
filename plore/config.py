@@ -46,6 +46,13 @@ class Config:
     awc_access_key_id: str = _env("AWC_ACCESS_KEY_ID", "")
     awc_access_key_secret: str = _env("AWC_ACCESS_KEY_SECRET", "")
 
+    # Artifact offload (S3/MinIO). Empty endpoint → binary responses are summarized inline.
+    minio_endpoint: str = _env("MINIO_ENDPOINT", "")  # host:port (no scheme)
+    minio_access_key: str = _env("MINIO_ACCESS_KEY", "")
+    minio_secret_key: str = _env("MINIO_SECRET_KEY", "")
+    minio_bucket: str = _env("MINIO_BUCKET", "plore-artifacts")
+    minio_secure: bool = _env("MINIO_SECURE", "false").lower() == "true"
+
     # Methods that are auto-executed without a human approval gate.
     safe_methods: tuple[str, ...] = ("GET", "HEAD", "OPTIONS")
 

@@ -80,6 +80,40 @@ spec:
               until ollama list >/dev/null 2>&1; do echo "waiting for ollama..."; sleep 3; done
               ollama pull all-minilm
 ---
+# Object storage for artifact offload (downloaded bundles, etc.).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: plore
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: minio } }
+  template:
+    metadata: { labels: { app: minio } }
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - { name: MINIO_ROOT_USER, value: "plore" }
+            - { name: MINIO_ROOT_PASSWORD, value: "plore-secret" }
+          ports:
+            - { containerPort: 9000 }
+            - { containerPort: 9001 }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      volumes: [{ name: data, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: minio, namespace: plore }
+spec:
+  selector: { app: minio }
+  ports:
+    - { name: s3, port: 9000, targetPort: 9000 }
+    - { name: console, port: 9001, targetPort: 9001 }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -170,6 +204,11 @@ spec:
               valueFrom: { secretKeyRef: { name: plore-awc-creds, key: client-id } }
             - name: AWC_ACCESS_KEY_SECRET
               valueFrom: { secretKeyRef: { name: plore-awc-creds, key: client-secret } }
+            # Artifact offload to in-cluster MinIO.
+            - { name: MINIO_ENDPOINT, value: "minio:9000" }
+            - { name: MINIO_ACCESS_KEY, value: "plore" }
+            - { name: MINIO_SECRET_KEY, value: "plore-secret" }
+            - { name: MINIO_BUCKET, value: "plore-artifacts" }
           ports: [{ containerPort: 8501 }]
 ---
 apiVersion: v1
