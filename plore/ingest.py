@@ -30,25 +30,32 @@ _AWC_HINT = (
 
 
 def _enrich_intent(method: str, path: str, base_desc: str) -> str:
-    """One LLM line of user-intent synonyms for an operation, to improve search recall."""
+    """A comma-separated list of user-intent synonyms for an operation, to improve recall."""
     try:
         out = llm.chat(
             [
                 {
                     "role": "system",
-                    "content": "In ONE short line, list the natural-language user requests "
-                    "(with synonyms like create/provision/launch/list/delete) that should map to "
-                    "this AWC API operation, to improve semantic search. " + _AWC_HINT
-                    + " Plain text only, no preamble, no list markers.",
+                    "content": "Output ONLY a comma-separated list of short natural-language "
+                    "user-request phrases (include synonyms like create/provision/launch/list/"
+                    "delete) that should map to this AWC API operation, to improve semantic "
+                    "search. No preamble, no numbering, no quotes. " + _AWC_HINT,
                 },
-                {"role": "user", "content": f"{method} {path} — {base_desc}"},
+                {"role": "user", "content": f"{method} {path} — {base_desc}\nPhrases:"},
             ],
-            max_tokens=80,
+            max_tokens=120,
         )
     except Exception:  # noqa: BLE001 - enrichment is best-effort; fall back to base description
         return ""
-    line = out.strip().splitlines()[0].strip() if out and out.strip() else ""
-    return line if 0 < len(line) <= 240 else ""
+    if not out or not out.strip():
+        return ""
+    txt = " ".join(out.split())  # collapse newlines/whitespace so multi-line lists survive
+    low = txt.lower()
+    for lead in ("here", "the following", "sure", "below", "these are"):
+        if low.startswith(lead) and ":" in txt:  # drop a leading "Here is ...:" preamble
+            txt = txt.split(":", 1)[1].strip()
+            break
+    return txt[:300]
 
 
 def _load_specs_from_dir(specs_dir: Path) -> dict[str, dict]:
