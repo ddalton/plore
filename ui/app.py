@@ -14,6 +14,7 @@ and can be resumed by its Session ID. The HITL interrupt also resumes from there
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import streamlit as st
@@ -96,12 +97,28 @@ with st.sidebar:
 
 # --- HITL approval gate (rendered when the router interrupted on a mutating call) ---
 if st.session_state.pending:
-    p = st.session_state.pending
+    payload = st.session_state.pending["payload"]
+    call = payload.get("proposed_call", {})
+    missing = payload.get("missing_required") or []
     st.warning("This request resolves to a **mutating** API call and needs your approval.")
-    st.json(p["payload"].get("proposed_call", p["payload"]))
+    st.write(f"**{call.get('method', '')} {call.get('path', '')}**")
+    if missing:
+        st.error("Missing required field(s): " + ", ".join(missing) + " — fill them in below.")
+    st.caption("Review/edit the request body (pre-filled from the spec example), then approve:")
+    body_text = st.text_area(
+        "Request body (JSON)",
+        value=json.dumps(call.get("body", {}), indent=2),
+        height=260,
+        key="body_edit",
+    )
     col_yes, col_no = st.columns(2)
-    if col_yes.button("✅ Approve", use_container_width=True):
-        state = _router_graph().invoke(Command(resume={"approved": True}), _cfg())
+    if col_yes.button("✅ Approve & execute", use_container_width=True):
+        try:
+            edited = json.loads(body_text or "{}")
+        except json.JSONDecodeError as exc:
+            st.error(f"Invalid JSON: {exc}")
+            st.stop()
+        state = _router_graph().invoke(Command(resume={"approved": True, "body": edited}), _cfg())
         _finish_router(state)
         st.rerun()
     if col_no.button("❌ Reject", use_container_width=True):

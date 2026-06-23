@@ -24,10 +24,14 @@ CREATE TABLE IF NOT EXISTS api_endpoint_registry (
     endpoint_path        VARCHAR(255) NOT NULL,
     operation_id         VARCHAR(255),
     raw_openapi_json     JSONB        NOT NULL,
+    body_schema          JSONB,
     semantic_description TEXT         NOT NULL,
     embedding            VECTOR(384)  NOT NULL,
     UNIQUE (project_id, microservice_name, http_method, endpoint_path)
 );
+
+-- Migrate existing tables (CREATE TABLE IF NOT EXISTS won't add new columns).
+ALTER TABLE api_endpoint_registry ADD COLUMN IF NOT EXISTS body_schema JSONB;
 
 CREATE INDEX IF NOT EXISTS api_endpoint_registry_embedding_hnsw
     ON api_endpoint_registry USING hnsw (embedding vector_cosine_ops);
@@ -68,6 +72,7 @@ class Candidate:
     operation_id: str | None
     semantic_description: str
     raw_openapi_json: dict
+    body_schema: dict | None
     distance: float
 
 
@@ -80,6 +85,7 @@ def upsert_operation(
     endpoint_path: str,
     operation_id: str | None,
     raw_openapi_json: dict,
+    body_schema: dict | None,
     semantic_description: str,
     embedding: list[float],
 ) -> None:
@@ -87,12 +93,13 @@ def upsert_operation(
         """
         INSERT INTO api_endpoint_registry
             (project_id, microservice_name, http_method, endpoint_path,
-             operation_id, raw_openapi_json, semantic_description, embedding)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+             operation_id, raw_openapi_json, body_schema, semantic_description, embedding)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (project_id, microservice_name, http_method, endpoint_path)
         DO UPDATE SET
             operation_id = EXCLUDED.operation_id,
             raw_openapi_json = EXCLUDED.raw_openapi_json,
+            body_schema = EXCLUDED.body_schema,
             semantic_description = EXCLUDED.semantic_description,
             embedding = EXCLUDED.embedding
         """,
@@ -103,6 +110,7 @@ def upsert_operation(
             endpoint_path,
             operation_id,
             json.dumps(raw_openapi_json),
+            json.dumps(body_schema) if body_schema is not None else None,
             semantic_description,
             embedding,
         ),
@@ -148,7 +156,7 @@ def search(
     rows = conn.execute(
         """
         SELECT microservice_name, http_method, endpoint_path, operation_id,
-               semantic_description, raw_openapi_json,
+               semantic_description, raw_openapi_json, body_schema,
                embedding <=> %s AS distance
         FROM api_endpoint_registry
         WHERE project_id = %s
@@ -165,7 +173,8 @@ def search(
             operation_id=r[3],
             semantic_description=r[4],
             raw_openapi_json=r[5],
-            distance=float(r[6]),
+            body_schema=r[6],
+            distance=float(r[7]),
         )
         for r in rows
     ]

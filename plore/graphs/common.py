@@ -91,6 +91,7 @@ def candidate_views(candidates: list[db.Candidate]) -> list[dict[str, Any]]:
         v["operation_id"] = c.operation_id
         v["description"] = c.semantic_description
         v["distance"] = round(c.distance, 4)
+        v["body_schema"] = c.body_schema  # {required, properties, example} or None
         views.append(v)
     return views
 

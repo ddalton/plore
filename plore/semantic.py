@@ -20,6 +20,39 @@ class Operation:
     endpoint_path: str
     operation_id: str | None
     raw: dict
+    body_schema: dict | None = None  # {required, properties, example} resolved from $ref
+
+
+def _deref(node, spec, _depth=0):
+    """Resolve a single $ref against the spec (one hop, bounded depth)."""
+    if _depth > 5 or not isinstance(node, dict):
+        return node if isinstance(node, dict) else {}
+    if "$ref" in node:
+        target = spec
+        for part in node["$ref"].lstrip("#/").split("/"):
+            target = (target or {}).get(part, {}) if isinstance(target, dict) else {}
+        return _deref(target, spec, _depth + 1)
+    return node
+
+
+def body_schema_from_op(op: dict, spec: dict) -> dict | None:
+    """Resolve an operation's JSON requestBody into {required, properties, example}."""
+    content = ((op.get("requestBody") or {}).get("content") or {}).get("application/json") or {}
+    if not content:
+        return None
+    schema = _deref(content.get("schema") or {}, spec)
+    props = {}
+    for name, pdef in (schema.get("properties") or {}).items():
+        pdef = _deref(pdef, spec) if isinstance(pdef, dict) else {}
+        props[name] = {
+            "type": pdef.get("type"),
+            "description": (pdef.get("description") or "")[:120],
+        }
+    return {
+        "required": schema.get("required") or [],
+        "properties": props,
+        "example": content.get("example"),
+    }
 
 
 def iter_operations(spec: dict, microservice_name: str):
@@ -36,6 +69,7 @@ def iter_operations(spec: dict, microservice_name: str):
                 endpoint_path=path,
                 operation_id=op.get("operationId"),
                 raw=op,
+                body_schema=body_schema_from_op(op, spec),
             )
 
 

@@ -172,6 +172,7 @@ def ingest(specs: dict[str, dict]) -> int:
                 endpoint_path=op.endpoint_path,
                 operation_id=op.operation_id,
                 raw_openapi_json=op.raw,
+                body_schema=op.body_schema,
                 semantic_description=desc,
                 embedding=vec,
             )

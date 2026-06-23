@@ -65,6 +65,7 @@ class RouterState(TypedDict, total=False):
     candidates: list[dict[str, Any]]
     proposed_call: dict[str, Any]
     approved: bool
+    missing_required: list[str]
     result: dict[str, Any]
     error: str
     response: str  # final natural-language answer for the user
@@ -159,17 +160,44 @@ def _node_extract(state: RouterState) -> RouterState:
     }
 
 
+def _node_gather_params(state: RouterState) -> RouterState:
+    """Scaffold the request body from the operation's example, overlay any extracted values,
+    and flag still-missing required fields (option A — example-as-defaults)."""
+    call = state.get("proposed_call") or {}
+    schema = next(
+        (c.get("body_schema") for c in (state.get("candidates") or [])
+         if c.get("method") == call.get("method") and c.get("path") == call.get("path")),
+        None,
+    )
+    if not schema:
+        return {}  # operation takes no JSON body
+    example = schema.get("example") if isinstance(schema.get("example"), dict) else {}
+    extracted = call.get("body") if isinstance(call.get("body"), dict) else {}
+    body = {**(example or {}), **extracted}  # example defaults, user/model values win
+    missing = [f for f in (schema.get("required") or [])
+               if f not in body or body.get(f) in (None, "")]
+    return {"proposed_call": {**call, "body": body}, "missing_required": missing}
+
+
 def _node_approval_gate(state: RouterState) -> RouterState:
-    # Pauses the run; resume with Command(resume={"approved": true/false}).
+    # Pauses the run; resume with Command(resume={"approved": bool, "body": {...}?}).
     decision = interrupt(
         {
             "type": "approval_required",
             "proposed_call": state.get("proposed_call"),
-            "prompt": "Approve this mutating API call? Resume with {'approved': true|false}.",
+            "missing_required": state.get("missing_required") or [],
+            "prompt": "Review/complete the body, then approve. "
+            "Resume with {'approved': true|false, 'body': {...}}.",
         }
     )
-    approved = decision.get("approved") if isinstance(decision, dict) else bool(decision)
-    return {"approved": bool(approved)}
+    call = state.get("proposed_call") or {}
+    if isinstance(decision, dict):
+        approved = decision.get("approved")
+        if isinstance(decision.get("body"), dict):
+            call = {**call, "body": decision["body"]}
+    else:
+        approved = bool(decision)
+    return {"approved": bool(approved), "proposed_call": call}
 
 
 def _node_execute(state: RouterState) -> RouterState:
@@ -276,8 +304,10 @@ def _node_respond(state: RouterState) -> RouterState:
 
 
 def _route_after_extract(state: RouterState) -> str:
-    if state.get("error"):
-        return "respond"
+    return "respond" if state.get("error") else "gather_params"
+
+
+def _route_after_gather(state: RouterState) -> str:
     method = (state.get("proposed_call") or {}).get("method", "GET")
     return "execute" if method in config.safe_methods else "approval_gate"
 
@@ -297,6 +327,7 @@ def build_graph(checkpointer=None):
     g.add_node("optimize", _node_optimize)
     g.add_node("retrieve", _node_retrieve)
     g.add_node("extract", _node_extract)
+    g.add_node("gather_params", _node_gather_params)
     g.add_node("approval_gate", _node_approval_gate)
     g.add_node("execute", _node_execute)
     g.add_node("rejected", _node_rejected)
@@ -309,8 +340,9 @@ def build_graph(checkpointer=None):
     g.add_edge("optimize", "retrieve")
     g.add_edge("retrieve", "extract")
     g.add_conditional_edges("extract", _route_after_extract,
-                            {"execute": "execute", "approval_gate": "approval_gate",
-                             "respond": "respond"})
+                            {"gather_params": "gather_params", "respond": "respond"})
+    g.add_conditional_edges("gather_params", _route_after_gather,
+                            {"execute": "execute", "approval_gate": "approval_gate"})
     g.add_conditional_edges("approval_gate", _route_after_gate,
                             {"execute": "execute", "rejected": "rejected"})
     g.add_edge("execute", "respond")
