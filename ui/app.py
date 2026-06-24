@@ -116,6 +116,9 @@ if st.session_state.pending:
     example = body_schema.get("example") if isinstance(body_schema.get("example"), dict) else {}
     diagnosis = payload.get("diagnosis") or {}
     evidence = payload.get("evidence") or []
+    needs_input = diagnosis.get("needs_user_input") or []
+    query_params = call.get("query_params") or {}
+    path_params = call.get("path_params") or {}
     st.warning("This request resolves to a **mutating** API call and needs your approval.")
     st.write(f"**{call.get('method', '')} {call.get('path', '')}**")
     # On a diagnose-driven retry, show why the prior attempt failed + what was probed.
@@ -124,21 +127,32 @@ if st.session_state.pending:
         if evidence:
             with st.expander("🧪 Diagnostic evidence (catalog/status/log probes)"):
                 st.json(evidence)
-    if missing:
-        st.error("Required field(s) you must supply real values for: " + ", ".join(missing))
-        # Surface each missing field's spec description — it often names the lookup endpoint
+    please_supply = list(dict.fromkeys(list(missing) + list(needs_input)))
+    if please_supply:
+        st.error("You must supply real value(s) for: " + ", ".join(please_supply))
+        # Surface each field's spec description — it often names the lookup endpoint
         # (e.g. appId: "...from GET /blueprints/{blueprintId}"), so the user can resolve it.
-        for f in missing:
+        for f in please_supply:
             pdef = props.get(f) or {}
             desc = " ".join((pdef.get("description") or "").split())
             ftype = pdef.get("type") or "?"
             st.caption(f"• **{f}** (`{ftype}`)" + (f" — {desc}" if desc else ""))
-    st.caption("Edit the request body below. Values are sent verbatim — do not approve spec "
-               "example placeholders as if they were real.")
+    st.caption("Edit the inputs below. Values are sent verbatim — do not approve spec example "
+               "placeholders as if they were real.")
+    # Path params (for {placeholders}) and query params are editable too, so a diagnose-driven
+    # fix that targets a query/path field (e.g. pod_name) can actually be completed here.
+    path_text = None
+    if path_params or "{" in str(call.get("path", "")):
+        path_text = st.text_area("Path parameters (JSON)",
+                                 value=json.dumps(path_params, indent=2), height=90, key="path_edit")
+    query_text = None
+    if query_params or needs_input:
+        query_text = st.text_area("Query parameters (JSON)",
+                                  value=json.dumps(query_params, indent=2), height=110, key="query_edit")
     body_text = st.text_area(
         "Request body (JSON)",
         value=json.dumps(call.get("body", {}), indent=2),
-        height=260,
+        height=240,
         key="body_edit",
     )
     if example:
@@ -146,12 +160,17 @@ if st.session_state.pending:
             st.json(example)
     col_yes, col_no = st.columns(2)
     if col_yes.button("✅ Approve & execute", use_container_width=True):
+        resume: dict = {"approved": True}
         try:
-            edited = json.loads(body_text or "{}")
+            resume["body"] = json.loads(body_text or "{}")
+            if query_text is not None:
+                resume["query_params"] = json.loads(query_text or "{}")
+            if path_text is not None:
+                resume["path_params"] = json.loads(path_text or "{}")
         except json.JSONDecodeError as exc:
             st.error(f"Invalid JSON: {exc}")
             st.stop()
-        state = _router_graph().invoke(Command(resume={"approved": True, "body": edited}), _cfg())
+        state = _router_graph().invoke(Command(resume=resume), _cfg())
         _finish_router(state)
         st.rerun()
     if col_no.button("❌ Reject", use_container_width=True):

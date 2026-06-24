@@ -234,6 +234,8 @@ spec:
             # Real execution through the AWC gateway (Knox-authenticated).
             - { name: AWC_API_BASE, value: "https://console.awc-core.poc.internal" }
             - { name: AWC_API_VERIFY_TLS, value: "false" }
+            # On c1 the workload pods live in the awc-core namespace (not the mcp-platform default).
+            - { name: DIAGNOSTICS_NAMESPACE, value: "awc-core" }
             - name: AWC_ACCESS_KEY_ID
               valueFrom: { secretKeyRef: { name: plore-awc-creds, key: client-id } }
             - name: AWC_ACCESS_KEY_SECRET
