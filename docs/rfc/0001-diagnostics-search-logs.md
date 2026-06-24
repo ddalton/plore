@@ -134,6 +134,23 @@ This endpoint is on the agent's **realtime** diagnosis path — the troubleshoot
 during an interactive turn — so it must be low-latency and cheap. It is implemented in **Rust**, in
 the existing `services/diagnostics` axum service, with these constraints:
 
+**Build on ripgrep's library crates — do not shell out to the `rg` binary or fork the source.**
+ripgrep is split into reusable, crates.io-published library crates that already implement this
+RFC's hot path: depend on **`grep-searcher`** (streaming line searcher with `before_context` /
+`after_context` / `passthru` and built-in context-break/overlap merging — i.e. grep `-B`/`-A`/`-C`
+with no duplicated lines) and **`grep-regex`** (matcher over the linear-time `regex` crate, SIMD
+literals via `memchr`/`memmem`), plus the `grep-matcher` trait. `grep-searcher::search_reader`
+operates over any `io::Read`, so pod log streams are searched in place — no temp files, no
+filesystem. Its `Sink` is a streaming callback, so we early-terminate (return `Ok(false)`) at
+`limit` and apply redaction + build our own JSON `blocks` per match. Do **not** pull `ignore` /
+`globset` (filesystem/gitignore traversal — irrelevant here), and do **not** reuse `grep-printer`'s
+JSON output (our schema needs redaction + correlationId). **License:** ripgrep and every one of
+these crates are dual-licensed **`Unlicense OR MIT`** — permissive, commercial-use-safe, no
+copyleft; under MIT just retain the copyright/permission notice in the service's third-party
+license manifest. Prefer pinned crates.io versions over the local `/Users/ddalton/github/ripgrep`
+checkout (security updates, no fork to maintain); vendoring is permitted by the license only if a
+local patch is ever required.
+
 - **Streaming, single-pass scan — never buffer a full log.** Read each pod's log stream
   line-by-line (async, `tokio`) and apply the filter as a streaming predicate. Peak memory is
   O(`contextBefore` + result so far), not O(log size).
