@@ -6,11 +6,11 @@ cd "$(dirname "$0")/../.."
 CTX=kind-c2
 NS=plore
 
-# 1. Build the image and load it into the kind cluster (no registry needed).
-docker build -t plore:0.1.0 .
-kind load docker-image plore:0.1.0 --name c2
+# The plore image is pulled from the registry; build & push with:
+#   docker buildx build --platform linux/amd64 \
+#     -t docker-sandbox.infra.cloudera.com/ddalton/plore:0.1.0 --push .
 
-# 2. Namespace + config (litellm config + the OpenAPI specs bundle).
+# 1. Namespace + config (litellm config + the OpenAPI specs bundle).
 # Generate the specs bundle from the awc-core OpenAPI files (not committed).
 SPECS_DIR=${SPECS_DIR:-../awc-core/api}
 python3 - "$SPECS_DIR" > deploy/c2/specs-bundle.json <<'PY'
@@ -28,10 +28,10 @@ kubectl --context $CTX -n $NS create configmap specs-bundle \
   --from-file=specs-bundle.json=deploy/c2/specs-bundle.json \
   --dry-run=client -o yaml | kubectl --context $CTX apply -f -
 
-# 3. Apply the stack.
+# 2. Apply the stack.
 kubectl --context $CTX apply -f deploy/c2/plore.yaml
 
-# 4. Wait for core services, then ingestion.
+# 3. Wait for core services, then ingestion.
 kubectl --context $CTX -n $NS rollout status deploy/pgvector --timeout=180s
 kubectl --context $CTX -n $NS rollout status deploy/ollama --timeout=180s
 kubectl --context $CTX -n $NS rollout status deploy/litellm --timeout=180s

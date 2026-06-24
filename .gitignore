@@ -12,4 +12,4 @@ venv/
 .langgraph_api/
 
 # generated deploy artifacts
-deploy/c2/specs-bundle.json
+deploy/*/specs-bundle.json

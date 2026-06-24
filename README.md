@@ -8,7 +8,7 @@ natural-language answer with durable, resumable sessions.
 
 Orchestrated with **LangGraph**. The LLM is reached through a **LiteLLM** gateway:
 - **chat** → Taalas `llama3.1-8B` via [taalas-proxy](https://github.com/ddalton/taalas-proxy)
-- **embeddings** → self-hosted **Ollama `all-minilm`** (384-dim) — Taalas has no embeddings API
+- **embeddings** → self-hosted **Ollama `embeddinggemma`** (768-dim, asymmetric query/doc prompts) — Taalas has no embeddings API
 
 This is **Phase I** of the MAUI agentic platform. Full design + diagrams: **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
@@ -44,7 +44,7 @@ pip install -e ".[dev,ui]"
 
 # 1. bring up the stack (vector DB, embedder, chat proxy, gateway)
 docker compose up -d pgvector ollama taalas-proxy litellm
-docker compose exec ollama ollama pull all-minilm   # first run only (384-dim embedder)
+docker compose exec ollama ollama pull embeddinggemma   # first run only (768-dim embedder)
 
 # 2. ingest the AWC OpenAPI specs into pgvector
 #    local dev: read the spec files directly

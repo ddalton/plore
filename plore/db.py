@@ -13,7 +13,9 @@ from .config import config
 
 # Authoritative schema (kept in sync with db/schema.sql, which is the human-readable copy).
 # Inlined so it works whether the package is installed editable or into site-packages.
-_SCHEMA_SQL = """
+# The embedding column width is single-sourced from config.embed_dim so it can never drift
+# from the active model (e.g. 768 for EmbeddingGemma, 384 for all-minilm).
+_SCHEMA_SQL = f"""
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS api_endpoint_registry (
@@ -26,7 +28,7 @@ CREATE TABLE IF NOT EXISTS api_endpoint_registry (
     raw_openapi_json     JSONB        NOT NULL,
     body_schema          JSONB,
     semantic_description TEXT         NOT NULL,
-    embedding            VECTOR(384)  NOT NULL,
+    embedding            VECTOR({config.embed_dim})  NOT NULL,
     UNIQUE (project_id, microservice_name, http_method, endpoint_path)
 );
 

@@ -21,12 +21,27 @@ class Config:
     litellm_base_url: str = _env("LITELLM_BASE_URL", "http://localhost:4000/v1")
     litellm_api_key: str = _env("LITELLM_API_KEY", "sk-plore-local")
     chat_model: str = _env("CHAT_MODEL", "taalas-llama")
-    embed_model: str = _env("EMBED_MODEL", "bge-small")
-    embed_dim: int = int(_env("EMBED_DIM", "384"))
+    embed_model: str = _env("EMBED_MODEL", "embeddinggemma")
+    embed_dim: int = int(_env("EMBED_DIM", "768"))
+    # EmbeddingGemma is asymmetric: queries and documents are embedded with different task
+    # prompts prepended to the text (see its model card). This is what lets a terse query
+    # ("show me what is deployed") match a verbose endpoint description. Set either to "" to
+    # disable (e.g. for a symmetric model that doesn't use prompts).
+    embed_query_prefix: str = _env("EMBED_QUERY_PREFIX", "task: search result | query: ")
+    embed_doc_prefix: str = _env("EMBED_DOC_PREFIX", "title: none | text: ")
 
     # Retrieval
     top_k: int = int(_env("TOP_K", "5"))
     project_id: str = _env("PROJECT_ID", "awc")
+    # Agentic retrieval: retrieve -> evaluate -> reformulate loop instead of a blind one-shot
+    # query rewrite. The loop control is deterministic (this code); the LLM only judges relevance
+    # and suggests alternate phrasings. Set false to restore the one-shot optimize+retrieve path.
+    agentic_retrieval: bool = _env("AGENTIC_RETRIEVAL", "true").lower() == "true"
+    retrieval_max_iters: int = int(_env("RETRIEVAL_MAX_ITERS", "2"))
+    # Auto-accept threshold: if the nearest candidate's cosine distance is at/below this, the
+    # results are clearly relevant — return immediately (no LLM grader, no loop). Chosen from
+    # observed distances (relevant hits ≤~0.56, noise ≥~0.68); tunable.
+    retrieval_distance_floor: float = float(_env("RETRIEVAL_DISTANCE_FLOOR", "0.6"))
     # Ingestion: LLM-enrich each operation's embedded text with intent/synonyms for recall.
     enrich_descriptions: bool = _env("ENRICH_DESCRIPTIONS", "true").lower() == "true"
 

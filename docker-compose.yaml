@@ -2,7 +2,7 @@
 # gateway, the taalas chat proxy, and the LangGraph server.
 #
 #   docker compose up -d pgvector ollama taalas-proxy litellm
-#   docker compose exec ollama ollama pull all-minilm   # first run only
+#   docker compose exec ollama ollama pull embeddinggemma   # first run only
 #   SPECS_DIR=../awc-core/api DATABASE_URL=postgresql://plore:plore@localhost:5432/maui_registry \
 #     LITELLM_BASE_URL=http://localhost:4000/v1 plore-ingest
 #   plore-discovery "how do I list deployed clusters?"
@@ -20,9 +20,9 @@ services:
       timeout: 3s
       retries: 10
 
-  # Embedder. Local dev uses Ollama (arm64-native, reliable). all-minilm is 384-dim,
-  # same as the cluster's TEI bge-small-en-v1.5, so the pgvector schema is unchanged.
-  # First run: docker compose exec ollama ollama pull all-minilm
+  # Embedder. Ollama (arm64-native, reliable) serving EmbeddingGemma (768-dim) — the same
+  # model the clusters use, so behavior matches end to end.
+  # First run: docker compose exec ollama ollama pull embeddinggemma
   ollama:
     image: ollama/ollama:latest
     volumes: ["ollama:/root/.ollama"]
@@ -43,7 +43,7 @@ services:
       TAALAS_PROXY_BASE: http://taalas-proxy:3000/v1
       TAALAS_PROXY_KEY: "sk-taalas-local"
       EMBED_BASE: http://ollama:11434/v1
-      EMBED_MODEL_UPSTREAM: all-minilm
+      EMBED_MODEL_UPSTREAM: embeddinggemma
       LITELLM_MASTER_KEY: "sk-plore-local"
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro

@@ -1,6 +1,6 @@
 """Agent 1 — Intent-Driven API Router.
 
-Flow:  optimize_query -> retrieve -> extract_params -> (approval_gate) -> execute
+Flow:  triage -> retrieve (agentic) -> extract_params -> (approval_gate) -> execute
 GET/HEAD/OPTIONS are auto-executed; mutating methods pause at a LangGraph interrupt
 (the Approval Gate, MAUI guide §6) and resume with the human's decision.
 """
@@ -20,10 +20,9 @@ from langgraph.types import interrupt
 from .. import artifacts, awc_auth, llm
 from ..config import config
 from .common import (
+    agentic_retrieve,
     candidate_views,
-    optimize_query,
     parse_json_object,
-    retrieve,
     service_catalog_lines,
 )
 
@@ -68,7 +67,6 @@ _META_SYSTEM = (
 class RouterState(TypedDict, total=False):
     query: str
     intent: str
-    optimized_query: str
     candidates: list[dict[str, Any]]
     proposed_call: dict[str, Any]
     approved: bool
@@ -115,13 +113,8 @@ def _node_meta(state: RouterState) -> RouterState:
     }
 
 
-def _node_optimize(state: RouterState) -> RouterState:
-    return {"optimized_query": optimize_query(state["query"])}
-
-
 def _node_retrieve(state: RouterState) -> RouterState:
-    cands = retrieve(state["optimized_query"])
-    return {"candidates": candidate_views(cands)}
+    return {"candidates": candidate_views(agentic_retrieve(state["query"]))}
 
 
 def _node_extract(state: RouterState) -> RouterState:
@@ -326,14 +319,13 @@ def _route_after_gate(state: RouterState) -> str:
 
 
 def _route_after_triage(state: RouterState) -> str:
-    return "meta" if state.get("intent") == "meta" else "optimize"
+    return "meta" if state.get("intent") == "meta" else "retrieve"
 
 
 def build_graph(checkpointer=None):
     g = StateGraph(RouterState)
     g.add_node("triage", _node_triage)
     g.add_node("meta", _node_meta)
-    g.add_node("optimize", _node_optimize)
     g.add_node("retrieve", _node_retrieve)
     g.add_node("extract", _node_extract)
     g.add_node("gather_params", _node_gather_params)
@@ -344,9 +336,8 @@ def build_graph(checkpointer=None):
 
     g.set_entry_point("triage")
     g.add_conditional_edges("triage", _route_after_triage,
-                            {"meta": "meta", "optimize": "optimize"})
+                            {"meta": "meta", "retrieve": "retrieve"})
     g.add_edge("meta", END)
-    g.add_edge("optimize", "retrieve")
     g.add_edge("retrieve", "extract")
     g.add_conditional_edges("extract", _route_after_extract,
                             {"gather_params": "gather_params", "respond": "respond"})

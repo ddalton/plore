@@ -1,7 +1,10 @@
-# plore stack for the c2 kind cluster (namespace: plore).
-# Reuses the taalas-proxy already running in namespace `taalas` for chat.
-# ConfigMaps `litellm-config` and `specs-bundle` are created from files via kubectl
-# (see deploy/c2/deploy.sh). Storage is ephemeral (emptyDir) — this is a test cluster.
+# plore stack for the c1 kind cluster (namespace: plore).
+# c1 differences vs c2:
+#   - No `taalas` namespace: taalas-proxy runs in-namespace (image loaded via `kind load`).
+#   - awc-core gateway host `console.awc-core.poc.internal` -> istio-ingress ClusterIP 10.96.59.175.
+#   - plore image is the local arm64 build loaded via `kind load` (imagePullPolicy: Never).
+# ConfigMaps `litellm-config` and `specs-bundle`, and the `plore-awc-creds` secret, are created
+# out-of-band (see deploy/c1/deploy.sh). Storage is ephemeral (emptyDir) — this is a test cluster.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -80,6 +83,35 @@ spec:
               until ollama list >/dev/null 2>&1; do echo "waiting for ollama..."; sleep 3; done
               ollama pull embeddinggemma
 ---
+# Chat upstream for litellm (llama3.1-8B via taalas). c1 has no `taalas` namespace, so the
+# proxy runs here; image is loaded into the cluster with `kind load docker-image`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taalas-proxy
+  namespace: plore
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: taalas-proxy } }
+  template:
+    metadata: { labels: { app: taalas-proxy } }
+    spec:
+      containers:
+        - name: taalas-proxy
+          image: dilipdalton/taalas-proxy:0.1.0
+          imagePullPolicy: Never
+          env:
+            - { name: PORT, value: "3000" }
+            - { name: PROXY_API_KEY, value: "sk-taalas-local" }
+          ports: [{ containerPort: 3000 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: taalas-proxy, namespace: plore }
+spec:
+  selector: { app: taalas-proxy }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
 # Object storage for artifact offload (downloaded bundles, etc.).
 apiVersion: apps/v1
 kind: Deployment
@@ -130,7 +162,7 @@ spec:
           image: ghcr.io/berriai/litellm:main-latest
           args: ["--config", "/app/config.yaml", "--port", "4000"]
           env:
-            - { name: TAALAS_PROXY_BASE, value: "http://taalas-proxy.taalas.svc.cluster.local:3000/v1" }
+            - { name: TAALAS_PROXY_BASE, value: "http://taalas-proxy:3000/v1" }
             - { name: TAALAS_PROXY_KEY, value: "sk-taalas-local" }
             - { name: EMBED_BASE, value: "http://ollama:11434/v1" }
             - { name: LITELLM_MASTER_KEY, value: "sk-plore-local" }
@@ -159,8 +191,8 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: ingest
-          image: docker-sandbox.infra.cloudera.com/ddalton/plore:0.1.0
-          imagePullPolicy: IfNotPresent
+          image: plore:0.1.0
+          imagePullPolicy: Never
           command: ["plore-ingest", "--bundle", "/specs/specs-bundle.json"]
           env:
             - { name: DATABASE_URL, value: "postgresql://plore:plore@pgvector:5432/maui_registry" }
@@ -184,14 +216,14 @@ spec:
   template:
     metadata: { labels: { app: plore-ui } }
     spec:
-      # CoreDNS doesn't resolve *.poc.internal; point the gateway host at its ClusterIP.
+      # CoreDNS doesn't resolve *.poc.internal; point the gateway host at the istio-ingress ClusterIP.
       hostAliases:
-        - ip: "10.96.9.243"
+        - ip: "10.96.59.175"
           hostnames: ["console.awc-core.poc.internal"]
       containers:
         - name: ui
-          image: docker-sandbox.infra.cloudera.com/ddalton/plore:0.1.0
-          imagePullPolicy: IfNotPresent
+          image: plore:0.1.0
+          imagePullPolicy: Never
           command: ["streamlit", "run", "ui/app.py",
                     "--server.address", "0.0.0.0", "--server.port", "8501",
                     "--server.headless", "true"]

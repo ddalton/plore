@@ -12,7 +12,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from .. import llm
-from .common import candidate_views, optimize_query, retrieve
+from .common import agentic_retrieve, candidate_views
 
 _ANSWER_SYSTEM = (
     "You are an AWC API guide. Given a user question and a list of candidate API operations "
@@ -23,17 +23,12 @@ _ANSWER_SYSTEM = (
 
 class DiscoveryState(TypedDict, total=False):
     query: str
-    optimized_query: str
     candidates: list[dict[str, Any]]
     answer: str
 
 
-def _node_optimize(state: DiscoveryState) -> DiscoveryState:
-    return {"optimized_query": optimize_query(state["query"])}
-
-
 def _node_retrieve(state: DiscoveryState) -> DiscoveryState:
-    return {"candidates": candidate_views(retrieve(state["optimized_query"]))}
+    return {"candidates": candidate_views(agentic_retrieve(state["query"]))}
 
 
 def _node_answer(state: DiscoveryState) -> DiscoveryState:
@@ -56,11 +51,9 @@ def _node_answer(state: DiscoveryState) -> DiscoveryState:
 
 def build_graph(checkpointer=None):
     g = StateGraph(DiscoveryState)
-    g.add_node("optimize", _node_optimize)
     g.add_node("retrieve", _node_retrieve)
     g.add_node("answer", _node_answer)
-    g.set_entry_point("optimize")
-    g.add_edge("optimize", "retrieve")
+    g.set_entry_point("retrieve")
     g.add_edge("retrieve", "answer")
     g.add_edge("answer", END)
     return g.compile(checkpointer=checkpointer)

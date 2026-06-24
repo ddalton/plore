@@ -1,0 +1,50 @@
+# One-shot: SSO-authenticate with the LDAP bootstrap creds, mint an AWC access key
+# (client_id/client_secret), and verify the token exchange. The client_id/secret are
+# printed to the Job log (RESULT_CLIENT_ID / RESULT_CLIENT_SECRET); deploy.sh reads them
+# back and stores them in the `plore-awc-creds` secret. Test cluster only.
+# Requires the `ldap-bootstrap-credentials` secret to exist in the `plore` namespace
+# (deploy.sh copies it from awc-core).
+apiVersion: batch/v1
+kind: Job
+metadata: { name: mint-awc-key, namespace: plore }
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      # console + knox SSO hosts -> istio-ingress gateway ClusterIP (CoreDNS can't resolve *.poc.internal).
+      hostAliases:
+        - ip: "10.96.59.175"
+          hostnames:
+            - "console.awc-core.poc.internal"
+            - "knox.awc-core.poc.internal"
+      containers:
+        - name: mint
+          image: curlimages/curl:latest
+          env:
+            - name: LDAP_USER
+              valueFrom: { secretKeyRef: { name: ldap-bootstrap-credentials, key: username } }
+            - name: LDAP_PASS
+              valueFrom: { secretKeyRef: { name: ldap-bootstrap-credentials, key: password } }
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              BASE="https://console.awc-core.poc.internal"
+              REDIRECT_URL=$(curl -sk "${BASE}/" -o /dev/null -w '%{redirect_url}')
+              [ -n "${REDIRECT_URL}" ] || { echo "FATAL: no SSO redirect"; exit 1; }
+              curl -sk -u "${LDAP_USER}:${LDAP_PASS}" -c /tmp/cj "${REDIRECT_URL}" -o /tmp/r1 -w '%{http_code}\n'
+              HJ=$(grep hadoop-jwt /tmp/cj | awk '{print $NF}')
+              [ -n "${HJ}" ] || { echo "FATAL: no hadoop-jwt cookie"; cat /tmp/r1; exit 1; }
+              RESP=$(curl -sk -H "Cookie: hadoop-jwt=${HJ}" -H "Content-Type: application/json" \
+                -X POST "${BASE}/api/v0/auth/access-keys/credentials" -w '\n%{http_code}' \
+                -d '{"description":"plore-c1"}')
+              HC=$(echo "${RESP}" | tail -1); BODY=$(echo "${RESP}" | sed '$d')
+              [ "${HC}" = "201" ] || { echo "FATAL create (${HC}): ${BODY}"; exit 1; }
+              CID=$(echo "${BODY}" | sed -n 's/.*"client_id":"\([^"]*\)".*/\1/p')
+              CSEC=$(echo "${BODY}" | sed -n 's/.*"client_secret":"\([^"]*\)".*/\1/p')
+              TC=$(curl -sk -u "${CID}:${CSEC}" -X POST "${BASE}/api/v0/auth/access-keys/token" \
+                -d "grant_type=client_credentials" -o /dev/null -w '%{http_code}')
+              [ "${TC}" = "200" ] || { echo "FATAL token exchange: ${TC}"; exit 1; }
+              echo "RESULT_CLIENT_ID=${CID}"
+              echo "RESULT_CLIENT_SECRET=${CSEC}"

@@ -19,7 +19,7 @@ Routers*): a thin but complete vertical slice running in-cluster.
 | Orchestration | **LangGraph** (state machine, interrupts/HITL, Postgres checkpointer) |
 | LLM access | **LiteLLM** gateway — one OpenAI-compatible surface |
 | Chat model | Taalas **`llama3.1-8B`** via a custom **taalas-proxy** (chatjimmy backend) |
-| Embeddings | self-hosted **Ollama `all-minilm`** (384-dim) — Taalas has no embeddings API |
+| Embeddings | self-hosted **Ollama `embeddinggemma`** (768-dim, asymmetric query/doc prompts) — Taalas has no embeddings API |
 | Vector store | **pgvector** (operation-level registry, HNSW, cosine) |
 | Execution target | AWC services via the **Knox gateway** (access-key → JWT) |
 | Artifacts | **MinIO** (S3) offload, referenced in the session |
@@ -45,7 +45,7 @@ flowchart TB
             discovery["Discovery agent"]
         end
         litellm["LiteLLM gateway"]
-        ollama["Ollama embedder<br/>all-minilm (384d)"]
+        ollama["Ollama embedder<br/>embeddinggemma (768d)"]
         pg[("pgvector<br/>api_endpoint_registry<br/>service_catalog<br/>checkpoints")]
         minio[("MinIO<br/>plore-artifacts")]
         ingest["Ingestion Job<br/>(OpenAPI -> rows)"]
@@ -123,7 +123,7 @@ flowchart LR
     split --> desc["semantic_description<br/>(summary + FULL description + tags + params)"]
     split --> body["resolve $ref requestBody<br/>-> {required, properties, example}"]
     split --> svc["service_catalog<br/>(info.title/description)"]
-    desc --> embed["embed via LiteLLM -> Ollama (384d)"]
+    desc --> embed["embed via LiteLLM -> Ollama (768d)"]
     embed --> upsert[("pgvector upsert<br/>(idempotent on service+method+path)")]
     body --> upsert
     svc --> upsert
@@ -134,7 +134,7 @@ flowchart LR
 ```sql
 project_id, microservice_name, http_method, endpoint_path,
 operation_id, raw_openapi_json, body_schema (jsonb), semantic_description,
-embedding VECTOR(384)   -- HNSW index, cosine
+embedding VECTOR(768)   -- HNSW index, cosine
 ```
 
 - `service_catalog(project_id, microservice_name, title, description)` — grounds the agent's
@@ -304,7 +304,7 @@ flowchart TB
 
 - Image built locally and `kind load`ed (`plore:0.1.0`); supporting images pulled from registries.
 - TEI (the originally-planned embedder) is amd64-only and wouldn't run under emulation, so the
-  embedder is **Ollama `all-minilm`** (arm64-native, also 384-dim — schema unchanged).
+  embedder is **Ollama `embeddinggemma`** (arm64-native, 768-dim).
 - Manifests + deploy script: `deploy/c2/`.
 
 ---
@@ -364,7 +364,7 @@ plore/
 ```bash
 # local
 docker compose up -d pgvector ollama taalas-proxy litellm
-docker compose exec ollama ollama pull all-minilm
+docker compose exec ollama ollama pull embeddinggemma
 SPECS_DIR=../awc-core/api plore-ingest
 streamlit run ui/app.py            # http://localhost:8501
 
