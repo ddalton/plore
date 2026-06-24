@@ -11,9 +11,14 @@ these automatically, so we prepend them here.
 
 from __future__ import annotations
 
+import time
+
 from openai import OpenAI
 
 from .config import config
+from .obs import get_logger
+
+_log = get_logger("plore.llm")
 
 _client: OpenAI | None = None
 
@@ -29,7 +34,14 @@ def embed(texts: list[str]) -> list[list[float]]:
     """Embed a batch of texts (raw, no task prompt); returns one vector per input."""
     if not texts:
         return []
-    resp = client().embeddings.create(model=config.embed_model, input=texts)
+    t0 = time.perf_counter()
+    try:
+        resp = client().embeddings.create(model=config.embed_model, input=texts)
+    except Exception as exc:  # noqa: BLE001 - log then re-raise so the failure is captured
+        _log.error("embed call FAILED model=%s n=%d err=%s", config.embed_model, len(texts), exc)
+        raise
+    _log.debug("embed ok model=%s n=%d ms=%.0f", config.embed_model, len(texts),
+               (time.perf_counter() - t0) * 1000)
     return [d.embedding for d in resp.data]
 
 
@@ -45,10 +57,18 @@ def embed_query(text: str) -> list[float]:
 
 def chat(messages: list[dict], temperature: float = 0.0, max_tokens: int | None = None) -> str:
     """Single completion; returns the assistant message content."""
-    resp = client().chat.completions.create(
-        model=config.chat_model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return (resp.choices[0].message.content or "").strip()
+    t0 = time.perf_counter()
+    try:
+        resp = client().chat.completions.create(
+            model=config.chat_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    except Exception as exc:  # noqa: BLE001 - log then re-raise so the failure is captured
+        _log.error("chat call FAILED model=%s msgs=%d err=%s", config.chat_model, len(messages), exc)
+        raise
+    out = (resp.choices[0].message.content or "").strip()
+    _log.debug("chat ok model=%s msgs=%d ms=%.0f out_len=%d", config.chat_model, len(messages),
+               (time.perf_counter() - t0) * 1000, len(out))
+    return out

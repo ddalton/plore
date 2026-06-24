@@ -9,22 +9,23 @@ from __future__ import annotations
 
 import json
 import operator
-import re
 from typing import Annotated, Any, TypedDict
-from uuid import uuid4
 
-import httpx
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from .. import artifacts, awc_auth, llm
+from .. import awc_api, llm
 from ..config import config
+from ..obs import get_logger
 from .common import (
     agentic_retrieve,
     candidate_views,
     parse_json_object,
     service_catalog_lines,
 )
+from .diagnose import diagnose_node, route_after_diagnose
+
+_log = get_logger("plore.router")
 
 _EXTRACT_SYSTEM = (
     "You are a Parameter Extraction Agent for the AWC platform. Given a user request and a "
@@ -71,6 +72,11 @@ class RouterState(TypedDict, total=False):
     proposed_call: dict[str, Any]
     approved: bool
     missing_required: list[str]
+    body_schema: dict[str, Any]  # {required, properties, example} of the chosen op, for the gate
+    # Agentic diagnose -> retry loop
+    retry_count: int
+    diagnosis: dict[str, Any]  # last verdict {cause, explanation, fix, needs_user_input, route}
+    evidence: Annotated[list[dict[str, Any]], operator.add]  # append-only probe results
     result: dict[str, Any]
     error: str
     response: str  # final natural-language answer for the user
@@ -141,14 +147,21 @@ def _node_extract(state: RouterState) -> RouterState:
         ],
         max_tokens=400,
     )
+    _log.debug("extract candidates=%s",
+               [(c["method"], c["path"], c.get("distance")) for c in ops])
     try:
         proposed = parse_json_object(reply)
     except ValueError as exc:
+        _log.warning("extract parse failed: %s | raw=%.200s", exc, reply)
         return {"error": str(exc)}
     idx = proposed.get("id")
     if not isinstance(idx, int) or idx < 0 or idx >= len(ops):
+        _log.warning("extract no-match for query=%r (id=%r, %d candidates)",
+                     state.get("query"), idx, len(ops))
         return {"error": "No registered endpoint matches this request."}
     chosen = ops[idx]
+    _log.info("extract selected id=%d -> %s %s (of %d candidates) for query=%r",
+              idx, chosen["method"], chosen["path"], len(ops), state.get("query"))
     # method and path are taken VERBATIM from the retrieved candidate — never model-authored.
     return {
         "proposed_call": {
@@ -163,8 +176,15 @@ def _node_extract(state: RouterState) -> RouterState:
 
 
 def _node_gather_params(state: RouterState) -> RouterState:
-    """Scaffold the request body from the operation's example, overlay any extracted values,
-    and flag still-missing required fields (option A — example-as-defaults)."""
+    """Build the request body from values ACTUALLY extracted from the user's request, and flag the
+    required fields the user did not supply.
+
+    The spec `example` is NOT merged into the body to be sent — it is passed to the approval gate
+    (via body_schema) as a per-field reference/placeholder only. Merging it in makes fictional
+    example values (e.g. appId: 7, clusterName: "my-cai-cluster") masquerade as real input: they
+    silently satisfy the required-field check, the gate shows a fully-populated body, and the call
+    executes against a non-existent resource (the cause of the deployApp 404 "application not
+    found"). Forcing the user/model to supply real values keeps the executed body honest."""
     call = state.get("proposed_call") or {}
     schema = next(
         (c.get("body_schema") for c in (state.get("candidates") or [])
@@ -173,12 +193,17 @@ def _node_gather_params(state: RouterState) -> RouterState:
     )
     if not schema:
         return {}  # operation takes no JSON body
-    example = schema.get("example") if isinstance(schema.get("example"), dict) else {}
     extracted = call.get("body") if isinstance(call.get("body"), dict) else {}
-    body = {**(example or {}), **extracted}  # example defaults, user/model values win
     missing = [f for f in (schema.get("required") or [])
-               if f not in body or body.get(f) in (None, "")]
-    return {"proposed_call": {**call, "body": body}, "missing_required": missing}
+               if f not in extracted or extracted.get(f) in (None, "")]
+    if missing:
+        _log.info("gather_params %s %s missing_required=%s",
+                  call.get("method"), call.get("path"), missing)
+    return {
+        "proposed_call": {**call, "body": extracted},
+        "missing_required": missing,
+        "body_schema": schema,
+    }
 
 
 def _node_approval_gate(state: RouterState) -> RouterState:
@@ -188,6 +213,10 @@ def _node_approval_gate(state: RouterState) -> RouterState:
             "type": "approval_required",
             "proposed_call": state.get("proposed_call"),
             "missing_required": state.get("missing_required") or [],
+            "body_schema": state.get("body_schema"),  # {required, properties, example} — gate hints
+            # Present on a diagnose-driven retry: why the prior attempt failed + what was probed.
+            "diagnosis": state.get("diagnosis"),
+            "evidence": state.get("evidence"),
             "prompt": "Review/complete the body, then approve. "
             "Resume with {'approved': true|false, 'body': {...}}.",
         }
@@ -199,68 +228,24 @@ def _node_approval_gate(state: RouterState) -> RouterState:
             call = {**call, "body": decision["body"]}
     else:
         approved = bool(decision)
+    _log.info("approval %s %s approved=%s", call.get("method"), call.get("path"), bool(approved))
     return {"approved": bool(approved), "proposed_call": call}
 
 
 def _node_execute(state: RouterState) -> RouterState:
     call = state.get("proposed_call") or {}
-    method = call.get("method", "GET")
-    path = call.get("path", "")
-    for key, value in (call.get("path_params") or {}).items():
-        path = path.replace(f"{{{key}}}", str(value))
-
-    if not config.awc_api_base:
-        return {"result": {"status": "dry_run", "would_call": {**call, "resolved_path": path}}}
-
-    url = config.awc_api_base.rstrip("/") + path
-    headers = {"Accept": "application/json, */*"}
-    token = awc_auth.get_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    try:
-        resp = httpx.request(
-            method,
-            url,
-            params=call.get("query_params") or None,
-            json=call.get("body") or None,
-            headers=headers,
-            verify=config.awc_api_verify_tls,
-            timeout=60,
-        )
-    except Exception as exc:  # noqa: BLE001 - surface any transport error to the caller
-        return {"error": f"execution failed: {exc}"}
-
-    result: dict[str, Any] = {"status": resp.status_code, "url": url, "method": method}
-    ctype = resp.headers.get("content-type", "").lower()
-    disp = resp.headers.get("content-disposition", "")
-    is_binary = bool(
-        "attachment" in disp
-        or (ctype and not ctype.startswith("text/") and "json" not in ctype)
-        or len(resp.content) > 200_000
+    result = awc_api.call(
+        call.get("method", "GET"),
+        call.get("path", ""),
+        path_params=call.get("path_params"),
+        query_params=call.get("query_params"),
+        body=call.get("body"),
     )
-
-    if "application/json" in ctype:
-        try:
-            result["body"] = resp.json()
-        except Exception:  # noqa: BLE001
-            result["body"] = resp.text[:2000]
-    elif is_binary and resp.is_success:
-        filename = _artifact_filename(disp, path)
-        key = f"downloads/{uuid4().hex}-{filename}"
-        result["artifact"] = artifacts.offload(
-            resp.content, key, ctype or "application/octet-stream"
-        )
-    else:
-        result["body"] = resp.text[:2000]
+    # A transport failure has no HTTP status; surface it as an error for the responder. Any HTTP
+    # response (incl. 4xx/5xx) flows on as a result so `evaluate` can route it to diagnose.
+    if result.get("status") == "error":
+        return {"result": result, "error": result.get("error")}
     return {"result": result}
-
-
-def _artifact_filename(content_disposition: str, path: str) -> str:
-    m = re.search(r'filename\*?=(?:"([^"]+)"|([^;]+))', content_disposition)
-    if m:
-        return (m.group(1) or m.group(2)).strip().split("/")[-1]
-    base = path.rstrip("/").split("/")[-1] or "artifact"
-    return base if "." in base else base + ".bin"
 
 
 def _node_rejected(state: RouterState) -> RouterState:
@@ -269,10 +254,11 @@ def _node_rejected(state: RouterState) -> RouterState:
 
 _RESPOND_SYSTEM = (
     "You are an AWC assistant. Using ONLY the information provided (the user's request, the API "
-    "call that was made or proposed, and its result), write a clear, concise natural-language "
-    "answer for the user. If the result is a dry run, explain what would be called. If there was "
-    "an error or the action was rejected, say so plainly. Summarize result data; do not invent "
-    "anything not present in the result."
+    "call that was made or proposed, its result, and any diagnosis), write a clear, concise "
+    "natural-language answer for the user. If the result is a dry run, explain what would be "
+    "called. If there was an error or the action was rejected, say so plainly. If a diagnosis is "
+    "present, explain what failed, what was tried (e.g. a corrected retry), and the outcome. "
+    "Summarize result data; do not invent anything not present in the inputs."
 )
 
 
@@ -282,6 +268,9 @@ def _node_respond(state: RouterState) -> RouterState:
         "api_call": state.get("proposed_call"),
         "result": state.get("result"),
         "error": state.get("error"),
+        "diagnosis": state.get("diagnosis"),
+        "evidence": state.get("evidence"),
+        "retries": state.get("retry_count"),
     }
     answer = llm.chat(
         [
@@ -299,6 +288,7 @@ def _node_respond(state: RouterState) -> RouterState:
                 "proposed_call": state.get("proposed_call"),
                 "result": state.get("result"),
                 "error": state.get("error"),
+                "diagnosis": state.get("diagnosis"),
                 "response": answer,
             }
         ],
@@ -322,6 +312,21 @@ def _route_after_triage(state: RouterState) -> str:
     return "meta" if state.get("intent") == "meta" else "retrieve"
 
 
+def _route_after_execute(state: RouterState) -> str:
+    """Success -> respond. A failure (4xx/5xx/transport) within retry budget, or an async 202
+    accept (to poll its status), -> diagnose. Otherwise respond."""
+    if not config.diagnose_enabled:
+        return "respond"
+    result = state.get("result") or {}
+    status = result.get("status")
+    if status == 202:  # async accept: one status check (not a retry; not budget-gated)
+        return "diagnose"
+    failed = status == "error" or (isinstance(status, int) and status >= 400)
+    if failed and int(state.get("retry_count") or 0) < config.max_retries:
+        return "diagnose"
+    return "respond"
+
+
 def build_graph(checkpointer=None):
     g = StateGraph(RouterState)
     g.add_node("triage", _node_triage)
@@ -331,6 +336,7 @@ def build_graph(checkpointer=None):
     g.add_node("gather_params", _node_gather_params)
     g.add_node("approval_gate", _node_approval_gate)
     g.add_node("execute", _node_execute)
+    g.add_node("diagnose", diagnose_node)
     g.add_node("rejected", _node_rejected)
     g.add_node("respond", _node_respond)
 
@@ -345,7 +351,13 @@ def build_graph(checkpointer=None):
                             {"execute": "execute", "approval_gate": "approval_gate"})
     g.add_conditional_edges("approval_gate", _route_after_gate,
                             {"execute": "execute", "rejected": "rejected"})
-    g.add_edge("execute", "respond")
+    # execute -> evaluate: success/exhausted -> respond; failure or async 202 -> diagnose.
+    g.add_conditional_edges("execute", _route_after_execute,
+                            {"diagnose": "diagnose", "respond": "respond"})
+    # diagnose -> auto-retry (execute), escalate (approval_gate), or report (respond).
+    g.add_conditional_edges("diagnose", route_after_diagnose,
+                            {"execute": "execute", "approval_gate": "approval_gate",
+                             "respond": "respond"})
     g.add_edge("rejected", "respond")
     g.add_edge("respond", END)
     return g.compile(checkpointer=checkpointer)

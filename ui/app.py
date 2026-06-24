@@ -23,6 +23,9 @@ from langgraph.types import Command
 from plore.checkpoint import get_checkpointer
 from plore.config import config
 from plore.graphs import discovery, router
+from plore.obs import configure_logging
+
+configure_logging()  # structured stdout logs -> OTel filelog -> diagnostics bundle
 
 st.set_page_config(page_title="plore — AWC API agent", page_icon="🛰️", layout="wide")
 
@@ -52,6 +55,14 @@ def _render_trace(state: dict) -> None:
     if state.get("proposed_call"):
         with st.expander("🧩 proposed API call", expanded=True):
             st.json(state["proposed_call"])
+    if state.get("diagnosis"):
+        retries = state.get("retry_count") or 0
+        label = "🔎 diagnosis" + (f" (after {retries} retr{'y' if retries == 1 else 'ies'})" if retries else "")
+        with st.expander(label, expanded=True):
+            st.json(state["diagnosis"])
+            if state.get("evidence"):
+                st.caption("Evidence (probes):")
+                st.json(state["evidence"])
     if state.get("result"):
         with st.expander("⚙️ execution result", expanded=True):
             st.json(state["result"])
@@ -100,17 +111,39 @@ if st.session_state.pending:
     payload = st.session_state.pending["payload"]
     call = payload.get("proposed_call", {})
     missing = payload.get("missing_required") or []
+    body_schema = payload.get("body_schema") or {}
+    props = body_schema.get("properties") or {}
+    example = body_schema.get("example") if isinstance(body_schema.get("example"), dict) else {}
+    diagnosis = payload.get("diagnosis") or {}
+    evidence = payload.get("evidence") or []
     st.warning("This request resolves to a **mutating** API call and needs your approval.")
     st.write(f"**{call.get('method', '')} {call.get('path', '')}**")
+    # On a diagnose-driven retry, show why the prior attempt failed + what was probed.
+    if diagnosis.get("explanation") or diagnosis.get("cause"):
+        st.info("🔎 **Diagnosis:** " + (diagnosis.get("explanation") or diagnosis.get("cause")))
+        if evidence:
+            with st.expander("🧪 Diagnostic evidence (catalog/status/log probes)"):
+                st.json(evidence)
     if missing:
-        st.error("Missing required field(s): " + ", ".join(missing) + " — fill them in below.")
-    st.caption("Review/edit the request body (pre-filled from the spec example), then approve:")
+        st.error("Required field(s) you must supply real values for: " + ", ".join(missing))
+        # Surface each missing field's spec description — it often names the lookup endpoint
+        # (e.g. appId: "...from GET /blueprints/{blueprintId}"), so the user can resolve it.
+        for f in missing:
+            pdef = props.get(f) or {}
+            desc = " ".join((pdef.get("description") or "").split())
+            ftype = pdef.get("type") or "?"
+            st.caption(f"• **{f}** (`{ftype}`)" + (f" — {desc}" if desc else ""))
+    st.caption("Edit the request body below. Values are sent verbatim — do not approve spec "
+               "example placeholders as if they were real.")
     body_text = st.text_area(
         "Request body (JSON)",
         value=json.dumps(call.get("body", {}), indent=2),
         height=260,
         key="body_edit",
     )
+    if example:
+        with st.expander("📋 Spec example (reference only — replace placeholder values)"):
+            st.json(example)
     col_yes, col_no = st.columns(2)
     if col_yes.button("✅ Approve & execute", use_container_width=True):
         try:

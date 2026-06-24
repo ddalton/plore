@@ -16,6 +16,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from .graphs import discovery, router
+from .obs import configure_logging
+
+configure_logging()
 
 
 def _query_from_argv() -> str:

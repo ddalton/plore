@@ -73,5 +73,21 @@ class Config:
     # Methods that are auto-executed without a human approval gate.
     safe_methods: tuple[str, ...] = ("GET", "HEAD", "OPTIONS")
 
+    # Observability: log level for plore's structured stdout logs. The cluster OTel filelog
+    # collector scrapes container stdout into the diagnostics bundle (filterable by namespace),
+    # so failures (chat/embed calls, API execution) are captured for troubleshooting.
+    log_level: str = _env("LOG_LEVEL", "INFO")
+
+    # Agentic execute -> diagnose -> retry loop. On a failed mutating call, plore diagnoses the
+    # error (from the response and/or the AWC diagnostics API) and retries up to max_retries times,
+    # auto-retrying only when the fix is unambiguous (else it routes to the HITL approval gate).
+    diagnose_enabled: bool = _env("DIAGNOSE_ENABLED", "true").lower() == "true"
+    max_retries: int = int(_env("MAX_RETRIES", "2"))
+    # Default namespace for diagnostics pod-log reads (GET /api/v1/diagnostics/downloadFile).
+    diagnostics_namespace: str = _env("DIAGNOSTICS_NAMESPACE", "mcp-platform")
+    # Bound async-failure polling (listExperiences/listDeployedClusters) so a turn can't hang.
+    diagnose_poll_attempts: int = int(_env("DIAGNOSE_POLL_ATTEMPTS", "3"))
+    diagnose_poll_interval_s: float = float(_env("DIAGNOSE_POLL_INTERVAL_S", "5"))
+
 
 config = Config()
