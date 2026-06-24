@@ -14,10 +14,44 @@ from __future__ import annotations
 
 import logging
 import sys
+import uuid
+from contextvars import ContextVar
 
 from .config import config
 
 _configured = False
+
+# Correlation id for the current request/turn. Set once per turn (from the session) and read by
+# awc_api when stamping outbound calls (X-Request-Id / W3C traceparent) and log lines, so every
+# call in a turn — including diagnose-loop probes and retries — shares one id that can be grepped
+# across plore's logs and, once downstream services propagate it, the diagnostics bundle.
+_correlation_id: ContextVar[str | None] = ContextVar("plore_correlation_id", default=None)
+
+
+def new_correlation_id(session_id: str | None = None) -> str:
+    """Generate a correlation id (a W3C-compatible 32-hex trace id) and make it current."""
+    cid = uuid.uuid4().hex  # 32 hex chars == a valid W3C trace-id
+    _correlation_id.set(cid)
+    return cid
+
+
+def set_correlation_id(cid: str | None) -> None:
+    if cid:
+        _correlation_id.set(cid)
+
+
+def get_correlation_id() -> str:
+    """Current correlation id, generating (and setting) an ephemeral one if none is set."""
+    cid = _correlation_id.get()
+    if not cid:
+        cid = new_correlation_id()
+    return cid
+
+
+def traceparent(cid: str | None = None) -> str:
+    """A W3C traceparent header value carrying the correlation id as the trace-id."""
+    cid = (cid or get_correlation_id())[:32].rjust(32, "0")
+    return f"00-{cid}-{uuid.uuid4().hex[:16]}-01"
 
 
 def configure_logging() -> None:

@@ -22,7 +22,7 @@ import httpx
 
 from . import artifacts, awc_auth
 from .config import config
-from .obs import get_logger
+from .obs import get_correlation_id, get_logger, traceparent
 
 _log = get_logger("plore.awc_api")
 
@@ -53,12 +53,16 @@ def call(
                                "query_params": query_params or {}, "body": body or {}}}
 
     url = config.awc_api_base.rstrip("/") + path
-    headers = {"Accept": "application/json, */*"}
+    # Stamp a correlation id so this call is traceable in logs (and, once downstream services
+    # propagate it, across the diagnostics bundle). X-Request-Id is greppable; traceparent is the
+    # W3C trace-context form the OTel collector understands.
+    cid = get_correlation_id()
+    headers = {"Accept": "application/json, */*", "X-Request-Id": cid, "traceparent": traceparent(cid)}
     token = awc_auth.get_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    # Never log headers/token — only method, url, status, and (on failure) the response body.
-    _log.info("call %s %s", method, url)
+    # Never log headers/token — only method, url, status, correlation id, and (on failure) the body.
+    _log.info("call %s %s cid=%s", method, url, cid)
     try:
         resp = httpx.request(
             method,
@@ -134,3 +138,66 @@ def pod_logs(pod_name: str, namespace: str | None = None, tail_lines: int = 100)
         return result["body"]
     return {"found": False, "podName": pod_name, "namespace": ns,
             "error": result.get("error") or result.get("body") or result.get("status")}
+
+
+# Proposed server-side log search (see the RFC / JIRA task). Predicate pushdown: the service
+# filters + redacts + caps, and returns only matching lines — so the agent never downloads a tar
+# bundle into its context just to grep it. Until that endpoint exists, search_logs() degrades to a
+# bounded downloadFile (server-tailed) + local grep when a pod is known. It NEVER pulls a full tar.
+_SEARCH_LOGS = "/api/v1/diagnostics/searchLogs"
+
+
+def _grep(lines: str, needles: list[str], limit: int) -> list[str]:
+    pats = [n.lower() for n in needles if n]
+    out = [ln for ln in (lines or "").splitlines()
+           if not pats or any(p in ln.lower() for p in pats)]
+    return out[-limit:] if limit and len(out) > limit else out
+
+
+def search_logs(
+    *,
+    namespace: str | None = None,
+    pod_name: str | None = None,
+    label_selector: str | None = None,
+    time_range: dict[str, str] | None = None,
+    log_level: str | None = None,
+    pattern: str | None = None,
+    correlation_id: str | None = None,
+    tail_lines: int = 500,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Search diagnostics logs by filter and return only matching lines (never a tar bundle).
+
+    Tries the server-side endpoint first; if it's absent, falls back to a bounded, pod-scoped
+    downloadFile + local grep. Without server-side search AND without a pod name there is nothing
+    cheap to grep — that case returns source='unavailable' rather than downloading everything."""
+    ns = namespace or config.diagnostics_namespace
+    body = {k: v for k, v in {
+        "namespaceList": [ns] if ns else None,
+        "podName": pod_name,
+        "labelSelector": label_selector,
+        "timeRange": time_range,
+        "logLevel": log_level,
+        "pattern": pattern,
+        "correlationId": correlation_id,
+        "limit": limit,
+    }.items() if v is not None}
+
+    server = call("POST", _SEARCH_LOGS, body=body)
+    if is_success(server):
+        return {"source": "server", "lines": server.get("body"), "filter": body}
+    server_missing = server.get("status") in (404, 405, 501)
+
+    if pod_name:  # bounded fallback: server-tailed single-pod logs, grepped locally
+        pl = pod_logs(pod_name, ns, tail_lines=tail_lines)
+        if pl.get("found"):
+            lines = _grep(pl.get("logs") or "", [pattern or "", correlation_id or ""], limit)
+            return {"source": "downloadFile+grep", "pod": pod_name, "namespace": ns,
+                    "lines": lines, "truncated": tail_lines, "server_search": not server_missing}
+        return {"source": "downloadFile+grep", "pod": pod_name, "namespace": ns,
+                "lines": [], "error": pl.get("error")}
+
+    return {"source": "unavailable", "namespace": ns, "filter": body,
+            "error": "server-side searchLogs not available and no pod_name to grep; "
+                     "needs the diagnostics searchLogs endpoint (label/namespace/time/correlationId).",
+            "server_status": server.get("status")}

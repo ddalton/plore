@@ -16,7 +16,7 @@ from langgraph.types import interrupt
 
 from .. import awc_api, llm
 from ..config import config
-from ..obs import get_logger
+from ..obs import get_logger, new_correlation_id, set_correlation_id
 from .common import (
     agentic_retrieve,
     candidate_views,
@@ -77,6 +77,7 @@ class RouterState(TypedDict, total=False):
     retry_count: int
     diagnosis: dict[str, Any]  # last verdict {cause, explanation, fix, needs_user_input, route}
     evidence: Annotated[list[dict[str, Any]], operator.add]  # append-only probe results
+    correlation_id: str  # per-turn trace id stamped on every outbound AWC call (X-Request-Id)
     result: dict[str, Any]
     error: str
     response: str  # final natural-language answer for the user
@@ -86,6 +87,10 @@ class RouterState(TypedDict, total=False):
 
 
 def _node_triage(state: RouterState) -> RouterState:
+    # Establish the per-turn correlation id (reused across the whole turn, incl. diagnose/retry).
+    cid = state.get("correlation_id") or new_correlation_id()
+    set_correlation_id(cid)
+    _log.info("turn start cid=%s query=%r", cid, state.get("query"))
     reply = llm.chat(
         [
             {"role": "system", "content": _TRIAGE_SYSTEM},
@@ -98,7 +103,7 @@ def _node_triage(state: RouterState) -> RouterState:
     except ValueError:
         kind = None
     # Default to api_action so plore's primary function is preserved on parse failure.
-    return {"intent": "meta" if kind == "meta" else "api_action"}
+    return {"intent": "meta" if kind == "meta" else "api_action", "correlation_id": cid}
 
 
 def _node_meta(state: RouterState) -> RouterState:
@@ -236,6 +241,7 @@ def _node_approval_gate(state: RouterState) -> RouterState:
 
 
 def _node_execute(state: RouterState) -> RouterState:
+    set_correlation_id(state.get("correlation_id"))  # rebind after a HITL resume (new invoke)
     call = state.get("proposed_call") or {}
     result = awc_api.call(
         call.get("method", "GET"),
@@ -288,6 +294,7 @@ def _node_respond(state: RouterState) -> RouterState:
             {
                 "query": state.get("query"),
                 "kind": "api_action",
+                "correlation_id": state.get("correlation_id"),  # grep key into the diagnostics bundle
                 "proposed_call": state.get("proposed_call"),
                 "result": state.get("result"),
                 "error": state.get("error"),

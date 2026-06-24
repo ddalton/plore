@@ -24,7 +24,7 @@ from typing import Any
 
 from .. import awc_api, llm
 from ..config import config
-from ..obs import get_logger
+from ..obs import get_logger, set_correlation_id
 from .common import parse_json_object
 
 _log = get_logger("plore.diagnose")
@@ -140,6 +140,7 @@ def _llm_verdict(state: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[
 
 
 def diagnose_node(state: dict[str, Any]) -> dict[str, Any]:
+    set_correlation_id(state.get("correlation_id"))  # reuse the turn's id on all diagnose probes
     call = state.get("proposed_call") or {}
     result = state.get("result") or {}
     status = result.get("status")
@@ -158,6 +159,16 @@ def diagnose_node(state: dict[str, Any]) -> dict[str, Any]:
         evidence.append({"probe": "deploy_status", **st})
         sstate = str(st.get("status") or "pending").lower()
         if sstate in ("failed", "error"):
+            # Best-effort: pull the matching diagnostics log lines for this turn. Filter by the
+            # correlation id (and namespace); degrades to source='unavailable' without server-side
+            # search + a known pod, and never downloads a tar bundle. Must not break the verdict.
+            try:
+                logs = awc_api.search_logs(correlation_id=state.get("correlation_id"),
+                                           log_level="error")
+                if logs.get("lines") or logs.get("error"):
+                    evidence.append({"probe": "search_logs", **logs})
+            except Exception as exc:  # noqa: BLE001 - log search is advisory only
+                _log.warning("search_logs probe failed: %s", exc)
             diagnosis.update(cause=st.get("statusReason") or "deployment failed",
                              explanation=f"Deployment {sstate}: {st.get('statusReason') or 'see status'}.")
         else:
