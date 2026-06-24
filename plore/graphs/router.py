@@ -224,8 +224,11 @@ def _node_approval_gate(state: RouterState) -> RouterState:
     call = state.get("proposed_call") or {}
     if isinstance(decision, dict):
         approved = decision.get("approved")
-        if isinstance(decision.get("body"), dict):
-            call = {**call, "body": decision["body"]}
+        # The human may correct any input — body, query params, or path params (e.g. a pod_name
+        # the agent couldn't know). Each is applied verbatim if provided.
+        for field in ("body", "query_params", "path_params"):
+            if isinstance(decision.get(field), dict):
+                call = {**call, field: decision[field]}
     else:
         approved = bool(decision)
     _log.info("approval %s %s approved=%s", call.get("method"), call.get("path"), bool(approved))
