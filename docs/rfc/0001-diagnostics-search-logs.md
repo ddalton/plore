@@ -128,6 +128,35 @@ single-line block.
 - **Source freshness.** Prefer the live k8s log API (like `downloadFile`) for recency; fall back to
   ingested store for `timeRange` windows older than the live retention.
 
+## Performance & implementation
+
+This endpoint is on the agent's **realtime** diagnosis path — the troubleshooting loop blocks on it
+during an interactive turn — so it must be low-latency and cheap. It is implemented in **Rust**, in
+the existing `services/diagnostics` axum service, with these constraints:
+
+- **Streaming, single-pass scan — never buffer a full log.** Read each pod's log stream
+  line-by-line (async, `tokio`) and apply the filter as a streaming predicate. Peak memory is
+  O(`contextBefore` + result so far), not O(log size).
+- **grep's streaming context algorithm.** Keep a fixed-size ring buffer of the last
+  `contextBefore` lines; on a match, flush the buffer, emit the match, then emit the next
+  `contextAfter` lines via a countdown. Overlapping/adjacent windows coalesce **for free** — the
+  countdown simply keeps extending — so each line is emitted at most once with no post-merge pass.
+- **Fast literal path.** When `pattern` is a plain substring (the common case), match with SIMD
+  substring search (`memchr`/`memmem`) — no regex engine. Reserve regex for explicit regex input.
+- **Linear-time regex only.** Use the `regex` crate (RE2-style, no catastrophic backtracking);
+  enforce a compiled-size limit and a per-line match budget. This doubles as the ReDoS guard.
+- **Bounded fan-out across pods.** Scan matching pods concurrently with a bounded
+  `buffer_unordered` (capped parallelism), and **early-terminate** every stream as soon as the
+  global `limit` of matched lines is reached — don't finish scanning pods whose results are already
+  capped.
+- **Minimal allocation / zero-copy.** Slice (`&str`) over owned `String` while filtering; only
+  allocate for lines that survive the filter + redaction and enter the response.
+- **Redaction on the hot path.** Apply redaction rules with precompiled matchers as part of the
+  single pass, so a matched line is redacted exactly once on its way into the response.
+- **Latency target.** For the live-k8s-API path, aim for a p99 well within a single-digit-hundred-ms
+  budget for a namespace-scoped query; `limit` + `timeRange` keep worst-case scan bounded. Consider
+  a chunked/NDJSON response so the agent can start reading before the slowest pod stream finishes.
+
 ## Why not the existing endpoints
 
 | Need | `downloadFile` | `collect`+`download` (tar) | `searchLogs` |
