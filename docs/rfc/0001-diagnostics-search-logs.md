@@ -62,20 +62,31 @@ valid full-text search; `correlationId` alone is valid; combinations narrow furt
   "logLevel": "error",                      // minimum level
   "pattern": "application not found",       // ANY string — free-text substring (or regex); see ReDoS guard
   "correlationId": "9f8e...32hex",          // X-Request-Id / W3C trace-id (an indexed special case)
-  "limit": 200                              // hard-capped server-side (e.g. max 1000)
+  "contextLines": 3,                        // grep -C: N lines before AND after each match (per pod)
+  "contextBefore": 3,                       // grep -B: overrides contextLines for the leading side
+  "contextAfter": 3,                        // grep -A: overrides contextLines for the trailing side
+  "limit": 200                              // hard-capped server-side (e.g. max 1000) — counts MATCHED lines
 }
 ```
 
-Response (`200`):
+Response (`200`). When context is requested, lines are returned as **blocks** — each block is a
+contiguous, time-ordered run of lines from one pod/container, with matched lines flagged. Without
+context (`contextLines`/`Before`/`After` all 0 or absent), each match is simply its own
+single-line block.
 
 ```jsonc
 {
-  "matched": 17,
+  "matched": 17,                            // number of MATCHED lines (not counting context)
   "truncated": false,                       // true if limit/time/byte cap hit
-  "lines": [
-    { "ts": "<rfc3339>", "namespace": "awc-core", "pod": "console-7c9...",
-      "container": "console", "level": "error", "correlationId": "9f8e...",
-      "message": "<redacted line>" }
+  "blocks": [
+    {
+      "namespace": "awc-core", "pod": "console-7c9...", "container": "console",
+      "lines": [
+        { "ts": "<rfc3339>", "level": "info",  "correlationId": "9f8e...", "matched": false, "message": "<redacted>" },
+        { "ts": "<rfc3339>", "level": "error", "correlationId": "9f8e...", "matched": true,  "message": "application not found" },
+        { "ts": "<rfc3339>", "level": "info",  "correlationId": "9f8e...", "matched": false, "message": "<redacted>" }
+      ]
+    }
   ]
 }
 ```
@@ -91,6 +102,18 @@ Response (`200`):
   store as `pattern` — important for the agent's "this request I just made" case, but not a
   precondition for searching. Requires services to log the incoming `X-Request-Id` / propagate
   `traceparent` (most already receive it from the gateway).
+- **Surrounding context, grep-style.** `contextLines` (and the asymmetric `contextBefore` /
+  `contextAfter`) return N lines of leading/trailing context around each match — the equivalent of
+  `grep -C` / `-B` / `-A`. A single error line is rarely self-explanatory; the stack frame or the
+  request line just above it usually is. Context is taken from the same pod/container/log stream as
+  the match, in original order.
+- **No duplicated or overlapping context.** When two matches are close enough that their context
+  windows overlap or abut (including adjacent matched lines), they are **coalesced into one block**
+  rather than emitted as separate, overlapping windows — exactly as `grep` merges into a single run
+  with no repeated lines. Every source line appears **at most once** in the response, and matched
+  lines within a merged block keep their `matched: true` flag. This keeps the payload minimal and
+  avoids the agent re-reading the same lines. `matched` counts only the matching lines, so `limit`
+  bounds matches while context lines ride along.
 - **Redaction at the line level.** Reuse the existing diagnostics redaction-rules engine on every
   returned `message`. Bearer tokens, `Authorization` headers, and secrets must never appear in
   output — this is stricter than the raw tar today.
@@ -131,7 +154,8 @@ ships — `search_logs` will simply start returning `source: "server"`.
 ## Rollout
 
 1. Implement `searchLogs` with `pattern` (any-string search) + `namespaceList` + `timeRange`
-   filters behind the existing auth — the general full-text case, usable on its own.
+   filters and grep-style `contextLines` (with overlap-merged blocks) behind the existing auth —
+   the general full-text case, usable on its own.
 2. Add `correlationId` as an indexed exact-match filter; confirm the gateway propagates
    `X-Request-Id` / `traceparent` to backend services and add structured logging of the id where
    missing.
