@@ -8,10 +8,13 @@
 ## Summary
 
 Add a `POST /api/v1/diagnostics/searchLogs` endpoint that filters, redacts, and caps log lines
-**server-side** and returns only the matching lines as JSON. Add first-class support for a
-**correlation id** (W3C trace-id / `X-Request-Id`) as a filter dimension so a caller can retrieve
-exactly the lines belonging to one logical request across pods — without knowing pod names and
-without downloading a bundle.
+**server-side** and returns only the matching lines as JSON. Search must work by **any string** —
+arbitrary free-text/substring (and optionally regex) matching against the log message — as a
+first-class filter, usable on its own (bounded by namespace/time) without any pod name. A
+**correlation id** (W3C trace-id / `X-Request-Id`) is one specialized, indexed case of this: it
+retrieves exactly the lines belonging to one logical request across pods. Both the general string
+search and the correlation-id search are core to this endpoint; neither is privileged over the
+other.
 
 ## Motivation
 
@@ -45,8 +48,10 @@ Authorization: Bearer <Knox/JWT>            # same auth as existing diagnostics 
 Content-Type: application/json
 ```
 
-Request body (all filters optional; AND-combined; at least one of `correlationId`, `podName`,
-`labelSelector`, or `namespaceList` required to bound the scan):
+Request body (all filters optional; AND-combined; at least one of `pattern`, `correlationId`,
+`podName`, `labelSelector`, or `namespaceList` required to bound the scan). Any single filter is
+sufficient — e.g. a bare `pattern` (with a default recent `timeRange` + entitled namespaces) is a
+valid full-text search; `correlationId` alone is valid; combinations narrow further:
 
 ```jsonc
 {
@@ -55,8 +60,8 @@ Request body (all filters optional; AND-combined; at least one of `correlationId
   "labelSelector": "app=console",           // k8s label selector
   "timeRange": { "start": "<rfc3339>", "end": "<rfc3339>" },
   "logLevel": "error",                      // minimum level
-  "pattern": "appId|application not found", // safe substring/regex (see ReDoS guard)
-  "correlationId": "9f8e...32hex",          // X-Request-Id / W3C trace-id
+  "pattern": "application not found",       // ANY string — free-text substring (or regex); see ReDoS guard
+  "correlationId": "9f8e...32hex",          // X-Request-Id / W3C trace-id (an indexed special case)
   "limit": 200                              // hard-capped server-side (e.g. max 1000)
 }
 ```
@@ -77,9 +82,15 @@ Response (`200`):
 
 ### Behavior & guarantees
 
-- **Correlation id is the headline feature.** Index/scan by `correlationId` so a caller retrieves
-  one request's lines across all pods that handled it. Requires services to log the incoming
-  `X-Request-Id` / propagate `traceparent` (most already receive it from the gateway).
+- **Search by any string.** `pattern` matches arbitrary free text against the log message —
+  substring by default, regex optionally (see ReDoS guard). It is a primary, standalone filter: a
+  caller can search for any string (e.g. `"application not found"`, an app name, an error code)
+  across the entitled namespaces and a time window without supplying a correlation id or pod name.
+- **Correlation id is the indexed special case.** `correlationId` retrieves one request's lines
+  across all pods that handled it. It is functionally a fast, exact-match path over the same log
+  store as `pattern` — important for the agent's "this request I just made" case, but not a
+  precondition for searching. Requires services to log the incoming `X-Request-Id` / propagate
+  `traceparent` (most already receive it from the gateway).
 - **Redaction at the line level.** Reuse the existing diagnostics redaction-rules engine on every
   returned `message`. Bearer tokens, `Authorization` headers, and secrets must never appear in
   output — this is stricter than the raw tar today.
@@ -119,9 +130,10 @@ ships — `search_logs` will simply start returning `source: "server"`.
 
 ## Rollout
 
-1. Implement `searchLogs` with `correlationId` + `namespaceList` filters (covers the agent's
-   primary case) behind the existing auth.
-2. Confirm gateway propagates `X-Request-Id` / `traceparent` to backend services; add structured
-   logging of the id where missing.
-3. Add `labelSelector` / `timeRange` / `logLevel` / `pattern` filters.
+1. Implement `searchLogs` with `pattern` (any-string search) + `namespaceList` + `timeRange`
+   filters behind the existing auth — the general full-text case, usable on its own.
+2. Add `correlationId` as an indexed exact-match filter; confirm the gateway propagates
+   `X-Request-Id` / `traceparent` to backend services and add structured logging of the id where
+   missing.
+3. Add `labelSelector` / `logLevel` to narrow further.
 4. plore flips to `source: "server"` automatically.
