@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS api_endpoint_registry (
     operation_id        VARCHAR(255),
     raw_openapi_json    JSONB        NOT NULL,
     semantic_description TEXT        NOT NULL,
-    embedding           VECTOR(384)  NOT NULL,
+    embedding           VECTOR(768)  NOT NULL,  -- EmbeddingGemma; matches config.embed_dim
     UNIQUE (project_id, microservice_name, http_method, endpoint_path)
 );
 

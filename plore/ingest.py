@@ -160,7 +160,7 @@ def ingest(specs: dict[str, dict]) -> int:
     for start in range(0, len(ops), _EMBED_BATCH):
         batch_ops = ops[start : start + _EMBED_BATCH]
         batch_desc = descriptions[start : start + _EMBED_BATCH]
-        vectors = llm.embed(batch_desc)
+        vectors = llm.embed_documents(batch_desc)
         for op, desc, vec in zip(batch_ops, batch_desc, vectors):
             db.upsert_operation(
                 conn,

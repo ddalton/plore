@@ -52,12 +52,116 @@ def _clean_optimized(text: str, fallback: str) -> str:
 
 
 def retrieve(optimized_query: str) -> list[db.Candidate]:
-    vec = llm.embed_one(optimized_query)
+    vec = llm.embed_query(optimized_query)
     conn = db.connect()
     try:
         return db.search(conn, vec, project_id=config.project_id, k=config.top_k)
     finally:
         conn.close()
+
+
+# --- Agentic retrieval: retrieve -> evaluate -> reformulate ---------------------------------
+# Control is owned by agentic_retrieve() below (deterministic, bounded). The LLM only performs two
+# narrow judgments a small model can manage: grade whether candidates are relevant, and suggest an
+# alternate phrasing. A blind one-shot rewrite (optimize_query) can silently replace a good query
+# with a bad one; the loop unions candidates across phrasings so a good hit can never be dropped.
+
+_RELEVANCE_SYSTEM = (
+    "You check retrieval quality. Given a user request and candidate API operations (method, path, "
+    "summary), decide whether AT LEAST ONE candidate can satisfy the request. "
+    'Respond with ONLY {"relevant": true} or {"relevant": false}.'
+)
+
+_REFORMULATE_SYSTEM = (
+    "You reformulate a search query for a technical OpenAPI vector registry. The phrasings already "
+    "tried did NOT surface a relevant endpoint. Given the user request and those phrasings, write "
+    "ONE different short search phrase that emphasizes other keywords or synonyms (resource nouns, "
+    "the HTTP action). Output ONLY the phrase — no preamble, no quotes."
+)
+
+
+def _merge_candidates(groups: list[list[db.Candidate]]) -> list[db.Candidate]:
+    """Union candidates from several retrievals: dedupe by (method, path), keep the smallest
+    distance, return sorted ascending by distance."""
+    best: dict[tuple[str, str], db.Candidate] = {}
+    for group in groups:
+        for c in group:
+            key = (c.http_method, c.endpoint_path)
+            if key not in best or c.distance < best[key].distance:
+                best[key] = c
+    return sorted(best.values(), key=lambda c: c.distance)
+
+
+def _grade_relevant(query: str, views: list[dict[str, Any]]) -> bool:
+    """LLM yes/no: can any candidate satisfy the request? Terse listing (same shape the selector
+    uses). Fail-open on parse error so the loop can't spin on a flaky reply."""
+    if not views:
+        return False
+    listing = [
+        {"method": v["method"], "path": v["path"],
+         "summary": v.get("summary") or (v.get("description") or "")[:120]}
+        for v in views
+    ]
+    reply = llm.chat(
+        [
+            {"role": "system", "content": _RELEVANCE_SYSTEM},
+            {"role": "user", "content": f"Request:\n{query}\n\nCandidates:\n"
+             + json.dumps(listing, indent=2)},
+        ],
+        max_tokens=16,
+    )
+    try:
+        return bool(parse_json_object(reply).get("relevant"))
+    except ValueError:
+        return True
+
+
+def _reformulate(query: str, tried: list[str]) -> str:
+    reply = llm.chat(
+        [
+            {"role": "system", "content": _REFORMULATE_SYSTEM},
+            {"role": "user", "content": f"User request:\n{query}\n\nPhrasings already tried:\n"
+             + "\n".join(f"- {t}" for t in tried)},
+        ],
+        max_tokens=64,
+    )
+    return _clean_optimized(reply, fallback=query)
+
+
+def agentic_retrieve(query: str) -> list[db.Candidate]:
+    """Bounded retrieve->evaluate->reformulate loop. Retrieves on the raw query first (best recall),
+    accepts immediately on a clearly-close hit, else brings in the optimized phrasing and an LLM
+    relevance grader, and reformulates up to retrieval_max_iters times. Returns the unioned top_k."""
+    if not config.agentic_retrieval:
+        return retrieve(optimize_query(query))
+
+    floor = config.retrieval_distance_floor
+    tried = [query]
+    groups = [retrieve(query)]
+    merged = _merge_candidates(groups)[: config.top_k]
+    # Fast path: a close raw-query hit needs no LLM and no loop.
+    if merged and merged[0].distance <= floor:
+        return merged
+
+    # Ambiguous: add the optimized (HyDE-style) phrasing and grade the union.
+    opt = optimize_query(query)
+    if opt and opt not in tried:
+        tried.append(opt)
+        groups.append(retrieve(opt))
+        merged = _merge_candidates(groups)[: config.top_k]
+    if (merged and merged[0].distance <= floor) or _grade_relevant(query, candidate_views(merged)):
+        return merged
+
+    for _ in range(config.retrieval_max_iters):
+        alt = _reformulate(query, tried)
+        if not alt or alt in tried:
+            break
+        tried.append(alt)
+        groups.append(retrieve(alt))
+        merged = _merge_candidates(groups)[: config.top_k]
+        if (merged and merged[0].distance <= floor) or _grade_relevant(query, candidate_views(merged)):
+            break
+    return merged
 
 
 def compact_operation(c: db.Candidate) -> dict[str, Any]:
